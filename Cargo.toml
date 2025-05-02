@@ -1,0 +1,31 @@
+[package]
+name = "based"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+sc = { git = "https://github.com/japaric/syscall.rs", package = "sc" }
+
+[profile.dev]
+panic = "abort"
+lto = true
+opt-level = 1
+codegen-units = 1
+strip = false
+debug = true
+rpath = false
+overflow-checks = true
+
+[profile.release]
+panic = "abort"
+lto = "fat"
+opt-level = "z"
+codegen-units = 1
+strip = true
+debug = false
+rpath = false
+overflow-checks = false
+
+[features]
+default = []

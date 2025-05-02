@@ -1,0 +1,20 @@
+# Can't define them conditionally via .cargo/config.toml
+RELEASE_FLAGS="-C linker=rust-lld -C linker-flavor=ld.lld -C link-arg=--entry=_start -C link-arg=-nostdlib -C link-arg=-static -C link-arg=-no-pie -C link-arg=-S -C link-arg=-n -C link-arg=--strip-all -C link-arg=--discard-all -C link-arg=--discard-locals"
+
+all: release
+
+# Target is mandatory
+# See https://github.com/rust-lang/compiler-builtins/issues/361#issuecomment-1011559018
+release:
+	RUSTFLAGS=$(RELEASE_FLAGS) cargo build --target x86_64-unknown-linux-gnu --release
+	objcopy --remove-section=.eh_frame --remove-section=.shstrtab --remove-section=.comment target/x86_64-unknown-linux-gnu/release/based based
+
+test:
+	cargo test
+
+coverage:
+	cargo tarpaulin --all-targets --count --force-clean --all-features --workspace --out Xml
+
+clean:
+	rm based
+	cargo clean

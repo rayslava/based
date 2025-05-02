@@ -1,0 +1,61 @@
+name: Build
+
+on:
+  push:
+    branches: [ "master" ]
+
+  pull_request:
+    branches: [ "master" ]
+
+env:
+  CARGO_TERM_COLOR: always
+  TARPAULIN_VER: 0.32.3
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: rust:1.86
+      options: --security-opt seccomp=unconfined
+
+    steps:
+    - uses: actions/checkout@v4
+      name: Checkout
+
+    - name: Prepare env
+      run: rustup component add rustfmt clippy
+
+    - name: Install tarpaulin
+      run: curl -L https://github.com/xd009642/tarpaulin/releases/download/${TARPAULIN_VER}/cargo-tarpaulin-x86_64-unknown-linux-musl.tar.gz | tar xfz - -C /usr/local/cargo/bin
+
+    - name: Format check
+      run: cargo fmt --all --check
+
+    - name: Build
+      run: make
+
+    - name: Test
+      run: make test
+
+    - name: Collect test coverage
+      run: make coverage
+
+    - name: Upload test results to Codecov
+      if: ${{ !cancelled() }}
+      uses: codecov/test-results-action@v1
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        files: ./cobertura.xml
+
+    - name: Archive code coverage results
+      uses: actions/upload-artifact@v4
+      with:
+        name: code-coverage-report
+        path: cobertura.xml
+
+    - name: Upload binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: based
+        path: based
+        if-no-files-found: error
