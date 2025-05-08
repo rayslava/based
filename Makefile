@@ -10,7 +10,7 @@ release:
 	objcopy --remove-section=.eh_frame --remove-section=.shstrtab --remove-section=.comment target/x86_64-unknown-linux-gnu/release/based based
 
 test:
-	cargo test
+	cargo nextest run
 
 coverage:
 	cargo tarpaulin --all-targets --count --force-clean --all-features --workspace --out Xml --engine Llvm

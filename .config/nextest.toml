@@ -1,0 +1,5 @@
+[profile.default.junit]
+path = "junit.xml"
+report-name = "Tests"
+store-success-output = true
+store-failure-output = true
