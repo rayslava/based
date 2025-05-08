@@ -13,7 +13,7 @@ test:
 	cargo test
 
 coverage:
-	cargo tarpaulin --all-targets --count --force-clean --all-features --workspace --out Xml
+	cargo tarpaulin --all-targets --count --force-clean --all-features --workspace --out Xml --engine Llvm
 
 clean:
 	rm based
