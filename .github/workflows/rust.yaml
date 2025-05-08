@@ -31,8 +31,8 @@ jobs:
     - name: Install nextest
       run: curl -LsSf https://get.nexte.st/latest/linux | tar xfz - -C ${CARGO_HOME:-/usr/local/cargo}/bin
 
-    - name: Format check
-      run: cargo fmt --all --check
+    - name: Style checks
+      run: make check
 
     - name: Build
       run: make
@@ -49,7 +49,6 @@ jobs:
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         files: ./target/nextest/default/junit.xml
-        verbose: true
 
     - name: Upload coverage to Codecov
       if: ${{ !cancelled() }}
@@ -57,7 +56,6 @@ jobs:
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         files: ./cobertura.xml
-        verbose: true
 
     - name: Archive code coverage results
       uses: actions/upload-artifact@v4

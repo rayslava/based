@@ -1,7 +1,7 @@
 use crate::syscall::{SysResult, ioctl, putchar, puts};
 use crate::termios::{
-    BRKINT, CS8, ECHO, ICANON, ICRNL, IEXTEN, INPCK, ISIG, ISTRIP, IXON, OPOST, TCGETS, TCSETS,
-    TIOCGWINSZ, Termios, VMIN, VTIME, Winsize,
+    BRKINT, CS8, ECHO, ICANON, ICRNL, IEXTEN, INPCK, ISIG, ISTRIP, IXON, OPOST, TCGETS, TIOCGWINSZ,
+    Termios, VMIN, VTIME, Winsize,
 };
 
 pub fn get_winsize(fd: usize, winsize: &mut Winsize) -> SysResult {
@@ -150,7 +150,7 @@ pub fn reset_colors() -> SysResult {
     puts(b"\x1b[0m")
 }
 
-pub fn draw_status_bar(winsize: &Winsize, row: u16, col: u16) -> SysResult {
+pub fn draw_status_bar(winsize: Winsize, row: u16, col: u16) -> SysResult {
     // Make sure we have at least 3 rows (1 for status bar, 1 for command line, and 1+ for editing)
     if winsize.rows < 3 {
         return Ok(0);
@@ -217,16 +217,15 @@ pub mod tests {
     pub static mut TEST_BUFFER_LEN: usize = 0;
     static mut TEST_MODE: bool = false;
 
-    // Function to handle puts calls in test mode
-    pub fn handle_test_puts(bytes: &[u8]) -> SysResult {
+    pub fn handle_test_puts(bytes: &[u8]) -> usize {
         unsafe {
             if TEST_MODE {
                 TEST_BUFFER_LEN = bytes.len();
                 TEST_BUFFER[..bytes.len()].copy_from_slice(bytes);
-                Ok(bytes.len())
+                bytes.len()
             } else {
                 // In case we don't want to capture output
-                Ok(bytes.len())
+                bytes.len()
             }
         }
     }
@@ -252,9 +251,9 @@ pub mod tests {
         let mut termios = Termios::new();
 
         // Set all bits to 1 in the flags
-        termios.iflag = 0xFFFFFFFF;
-        termios.oflag = 0xFFFFFFFF;
-        termios.lflag = 0xFFFFFFFF;
+        termios.iflag = 0xFFFF_FFFF;
+        termios.oflag = 0xFFFF_FFFF;
+        termios.lflag = 0xFFFF_FFFF;
 
         // Apply raw mode (tests actual implementation)
         set_raw_mode(&mut termios);
@@ -300,15 +299,13 @@ pub mod tests {
 
             assert_eq!(
                 len, expected_len,
-                "write_u16_to_buf({}) should write {} bytes",
-                input, expected_len
+                "write_u16_to_buf({input}) should write {expected_len} bytes"
             );
 
             let output = std::str::from_utf8(&buf[0..len]).unwrap();
             assert_eq!(
                 output, expected,
-                "write_u16_to_buf({}) should output '{}'",
-                input, expected
+                "write_u16_to_buf({input}) should output '{expected}'"
             );
         }
     }
@@ -380,8 +377,7 @@ pub mod tests {
 
             assert_eq!(
                 output_str, expected,
-                "write_number({}) should output '{}'",
-                input, expected
+                "write_number({input}) should output '{expected}'"
             );
         }
     }

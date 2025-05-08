@@ -1,4 +1,4 @@
-use crate::syscall::{STDIN, STDOUT, SysResult, putchar, puts, read};
+use crate::syscall::{STDIN, STDOUT, putchar, puts, read};
 use crate::terminal::{
     clear_screen, draw_status_bar, enter_alternate_screen, exit_alternate_screen, get_winsize,
 };
@@ -86,7 +86,7 @@ pub fn run_editor() -> Result<(), usize> {
     let mut cursor_col = 0;
 
     // Draw the initial status bar
-    draw_status_bar(&winsize, cursor_row, cursor_col)?;
+    draw_status_bar(winsize, cursor_row, cursor_col)?;
 
     while running {
         if let Some(key) = read_key() {
@@ -136,7 +136,7 @@ pub fn run_editor() -> Result<(), usize> {
                 }
             }
         }
-        draw_status_bar(&winsize, cursor_row, cursor_col)?;
+        draw_status_bar(winsize, cursor_row, cursor_col)?;
     }
     exit_alternate_screen()?;
     Ok(())
@@ -150,7 +150,7 @@ pub mod tests {
 
     // Thread-local storage for test input
     thread_local! {
-        pub static TEST_INPUT: RefCell<VecDeque<u8>> = RefCell::new(VecDeque::new());
+        pub static TEST_INPUT: RefCell<VecDeque<u8>> = const { RefCell::new(VecDeque::new()) };
     }
 
     // Helper to set up test input
@@ -182,12 +182,12 @@ pub mod tests {
         let test_cases = [
             TestCase {
                 name: "regular character",
-                input: &[b'a'],
+                input: b"a",
                 expected: Some(Key::Char(b'a')),
             },
             TestCase {
                 name: "enter key",
-                input: &[b'\r'],
+                input: b"\r",
                 expected: Some(Key::Enter),
             },
             TestCase {
@@ -202,7 +202,7 @@ pub mod tests {
             },
             TestCase {
                 name: "quit key",
-                input: &[b'q'],
+                input: b"q",
                 expected: Some(Key::Quit),
             },
             TestCase {

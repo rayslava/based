@@ -1,3 +1,4 @@
+#![deny(warnings)]
 #![cfg_attr(test, allow(unused_imports))]
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
@@ -10,7 +11,7 @@ mod terminal;
 mod termios;
 
 use editor::run_editor;
-use syscall::{exit, putchar, puts};
+use syscall::{exit, puts};
 use terminal::{get_termios, get_winsize, set_raw_mode, set_termios};
 use termios::{TCSETS, TCSETSW, Termios, Winsize};
 
@@ -20,14 +21,22 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
     unsafe { core::hint::unreachable_unchecked() }
 }
 
+/// # Safety
+///
+/// No one is safe once this program is started.
 #[cfg(not(test))]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn _start() -> Result<(), usize> {
+pub unsafe extern "C" fn _start() {
     // Need to align stack to make sse work
     unsafe { core::arch::asm!("and rsp, -64", options(nomem, nostack)) };
-    puts(b"BASic EDitor v0.1\r\n")?;
 
-    // Get window size
+    match main() {
+        Ok(()) => exit(0),
+        Err(e) => exit(e),
+    }
+}
+
+fn main() -> Result<(), usize> {
     let mut winsize = Winsize::new();
 
     if get_winsize(syscall::STDOUT, &mut winsize).is_ok() {
@@ -66,5 +75,6 @@ pub unsafe extern "C" fn _start() -> Result<(), usize> {
     } else {
         puts(b"Failed to get terminal attributes\r\n")?;
     }
-    exit(0);
+
+    Ok(())
 }

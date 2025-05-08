@@ -29,3 +29,6 @@ overflow-checks = false
 
 [features]
 default = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }

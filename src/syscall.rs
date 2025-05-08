@@ -34,10 +34,10 @@ pub fn exit(status: usize) -> ! {
 // Write function
 pub fn write(fd: usize, buf: &[u8]) -> SysResult {
     let result = unsafe { syscall!(WRITE, fd, buf.as_ptr(), buf.len()) };
-    if !is_error(result) {
-        Ok(result)
-    } else {
+    if is_error(result) {
         Err(usize::MAX - result + 1) // Extract actual errno
+    } else {
+        Ok(result)
     }
 }
 
@@ -45,10 +45,10 @@ pub fn write(fd: usize, buf: &[u8]) -> SysResult {
 // Read function
 pub fn read(fd: usize, buf: &mut [u8], count: usize) -> SysResult {
     let result = unsafe { syscall!(READ, fd, buf.as_ptr(), count) };
-    if !is_error(result) {
-        Ok(result)
-    } else {
+    if is_error(result) {
         Err(usize::MAX - result + 1) // Extract actual errno
+    } else {
+        Ok(result)
     }
 }
 
@@ -71,10 +71,10 @@ pub fn read(_fd: usize, buf: &mut [u8], _count: usize) -> SysResult {
 // ioctl function
 pub fn ioctl(fd: usize, request: usize, arg: usize) -> SysResult {
     let result = unsafe { syscall!(IOCTL, fd, request, arg) };
-    if !is_error(result) {
-        Ok(result)
-    } else {
+    if is_error(result) {
         Err(usize::MAX - result + 1) // Extract actual errno
+    } else {
+        Ok(result)
     }
 }
 
@@ -83,10 +83,12 @@ pub fn puts(msg: &[u8]) -> SysResult {
     write(STDOUT, msg)
 }
 
+// Need to match the signature
+#[allow(clippy::unnecessary_wraps)]
 #[cfg(test)]
 pub fn puts(msg: &[u8]) -> SysResult {
     use crate::terminal::tests::handle_test_puts;
-    handle_test_puts(msg)
+    Ok(handle_test_puts(msg))
 }
 
 // Write a single byte

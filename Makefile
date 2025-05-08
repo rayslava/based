@@ -18,3 +18,8 @@ coverage:
 clean:
 	rm based
 	cargo clean
+
+check:
+	cargo check
+	cargo fmt --all -- --check
+	cargo clippy --all-targets --all-features -- -W clippy::pedantic

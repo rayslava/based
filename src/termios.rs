@@ -8,17 +8,17 @@ pub const TCSETSF: usize = 0x5404;
 pub const TIOCGWINSZ: usize = 0x5413;
 
 // Termios flag constants
-pub const ECHO: u32 = 0o000010;
-pub const ICANON: u32 = 0o000002;
-pub const ISIG: u32 = 0o000001;
-pub const IEXTEN: u32 = 0o100000;
-pub const BRKINT: u32 = 0o000002;
-pub const ICRNL: u32 = 0o000400;
-pub const INPCK: u32 = 0o000020;
-pub const ISTRIP: u32 = 0o000040;
-pub const IXON: u32 = 0o002000;
-pub const OPOST: u32 = 0o000001;
-pub const CS8: u32 = 0o000060;
+pub const ECHO: u32 = 0o000_010;
+pub const ICANON: u32 = 0o000_002;
+pub const ISIG: u32 = 0o000_001;
+pub const IEXTEN: u32 = 0o100_000;
+pub const BRKINT: u32 = 0o000_002;
+pub const ICRNL: u32 = 0o000_400;
+pub const INPCK: u32 = 0o000_020;
+pub const ISTRIP: u32 = 0o000_040;
+pub const IXON: u32 = 0o002_000;
+pub const OPOST: u32 = 0o000_001;
+pub const CS8: u32 = 0o000_060;
 
 // Termios special character positions
 pub const VMIN: usize = 6;
@@ -45,11 +45,11 @@ impl Winsize {
     }
 
     pub fn as_bytes(&self) -> &[u8; 8] {
-        unsafe { core::mem::transmute(self) }
+        unsafe { &*core::ptr::from_ref::<Winsize>(self).cast::<[u8; 8]>() }
     }
 
     pub fn as_bytes_mut(&mut self) -> &mut [u8; 8] {
-        unsafe { core::mem::transmute(self) }
+        unsafe { &mut *core::ptr::from_mut::<Winsize>(self).cast::<[u8; 8]>() }
     }
 }
 
@@ -82,11 +82,11 @@ impl Termios {
     }
 
     pub fn as_bytes(&self) -> &[u8; 60] {
-        unsafe { core::mem::transmute(self) }
+        unsafe { &*core::ptr::from_ref::<Termios>(self).cast::<[u8; 60]>() }
     }
 
     pub fn as_bytes_mut(&mut self) -> &mut [u8; 60] {
-        unsafe { core::mem::transmute(self) }
+        unsafe { &mut *core::ptr::from_mut::<Termios>(self).cast::<[u8; 60]>() }
     }
 }
 
