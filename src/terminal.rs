@@ -192,6 +192,39 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(capture.as_string(), "\x1b[2J\x1b[H");
     }
+
+    #[test]
+    fn test_alternate_screen() {
+        let mut capture = OutputCapture::new();
+
+        // Define mock implementations for testing
+
+        fn test_enter_alternate_screen(capture: &mut OutputCapture) -> SysResult {
+            for &b in b"\x1b[?1049h" {
+                capture.capture(b)?;
+            }
+            Ok(8) // Return length of the sequence
+        }
+
+        fn test_exit_alternate_screen(capture: &mut OutputCapture) -> SysResult {
+            for &b in b"\x1b[?1049l" {
+                capture.capture(b)?;
+            }
+            Ok(8) // Return length of the sequence
+        }
+
+        // Test enter alternate screen
+        let mut enter_capture = OutputCapture::new();
+        let enter_result = test_enter_alternate_screen(&mut enter_capture);
+        assert!(enter_result.is_ok());
+        assert_eq!(enter_capture.as_string(), "\x1b[?1049h");
+
+        // Test exit alternate screen
+        let mut exit_capture = OutputCapture::new();
+        let exit_result = test_exit_alternate_screen(&mut exit_capture);
+        assert!(exit_result.is_ok());
+        assert_eq!(exit_capture.as_string(), "\x1b[?1049l");
+    }
 }
 
 // Clear the screen and position cursor at the top-left
@@ -199,4 +232,16 @@ pub fn clear_screen() -> SysResult {
     // ESC [ 2 J - Clear entire screen
     // ESC [ H - Move cursor to home position (0,0)
     puts(b"\x1b[2J\x1b[H")
+}
+
+// Save the current terminal state and switch to alternate screen buffer
+pub fn enter_alternate_screen() -> SysResult {
+    // ESC [ ? 1049 h - Save cursor position and switch to alternate screen
+    puts(b"\x1b[?1049h")
+}
+
+// Restore the previous terminal state from the main screen buffer
+pub fn exit_alternate_screen() -> SysResult {
+    // ESC [ ? 1049 l - Restore cursor position and switch to normal screen
+    puts(b"\x1b[?1049l")
 }
