@@ -41,6 +41,7 @@ pub fn write(fd: usize, buf: &[u8]) -> SysResult {
     }
 }
 
+#[cfg(not(test))]
 // Read function
 pub fn read(fd: usize, buf: &mut [u8], count: usize) -> SysResult {
     let result = unsafe { syscall!(READ, fd, buf.as_ptr(), count) };
@@ -49,6 +50,22 @@ pub fn read(fd: usize, buf: &mut [u8], count: usize) -> SysResult {
     } else {
         Err(usize::MAX - result + 1) // Extract actual errno
     }
+}
+
+#[cfg(test)]
+pub fn read(_fd: usize, buf: &mut [u8], _count: usize) -> SysResult {
+    use crate::editor::tests::TEST_INPUT;
+
+    TEST_INPUT.with(|inputs| {
+        let mut inputs = inputs.borrow_mut();
+        if let Some(input) = inputs.pop_front() {
+            if !buf.is_empty() {
+                buf[0] = input;
+                return Ok(1);
+            }
+        }
+        Ok(0)
+    })
 }
 
 // ioctl function
@@ -61,8 +78,15 @@ pub fn ioctl(fd: usize, request: usize, arg: usize) -> SysResult {
     }
 }
 
+#[cfg(not(test))]
 pub fn puts(msg: &[u8]) -> SysResult {
     write(STDOUT, msg)
+}
+
+#[cfg(test)]
+pub fn puts(msg: &[u8]) -> SysResult {
+    use crate::terminal::tests::handle_test_puts;
+    handle_test_puts(msg)
 }
 
 // Write a single byte
