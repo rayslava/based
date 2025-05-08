@@ -1,5 +1,8 @@
 use crate::syscall::{STDIN, STDOUT, SysResult, putchar, puts, read};
-use crate::terminal::{clear_screen, enter_alternate_screen, exit_alternate_screen};
+use crate::terminal::{
+    clear_screen, draw_status_bar, enter_alternate_screen, exit_alternate_screen, get_winsize,
+};
+use crate::termios::Winsize;
 
 // Function to read one character
 fn read_char() -> Option<u8> {
@@ -71,11 +74,18 @@ pub fn run_editor() -> Result<(), usize> {
     enter_alternate_screen()?;
     clear_screen()?;
 
+    // Get terminal size
+    let mut winsize = Winsize::new();
+    get_winsize(STDOUT, &mut winsize)?;
+
     let mut running = true;
 
     // Track cursor position
     let mut cursor_row = 0;
     let mut cursor_col = 0;
+
+    // Draw the initial status bar
+    draw_status_bar(&winsize, cursor_row, cursor_col)?;
 
     while running {
         if let Some(key) = read_key() {
@@ -86,12 +96,14 @@ pub fn run_editor() -> Result<(), usize> {
                     let _ = puts(b"\r\n");
                     cursor_row += 1;
                     cursor_col = 0;
+                    draw_status_bar(&winsize, cursor_row, cursor_col)?;
                 }
 
                 Key::Backspace => {
                     if cursor_col > 0 {
                         let _ = puts(b"\x08 \x08");
                         cursor_col -= 1;
+                        draw_status_bar(&winsize, cursor_row, cursor_col)?;
                     }
                 }
 
@@ -99,29 +111,34 @@ pub fn run_editor() -> Result<(), usize> {
                     if cursor_row > 0 {
                         let _ = puts(b"\x1b[A"); // Move cursor up
                         cursor_row -= 1;
+                        draw_status_bar(&winsize, cursor_row, cursor_col)?;
                     }
                 }
 
                 Key::ArrowDown => {
                     let _ = puts(b"\x1b[B"); // Move cursor down
                     cursor_row += 1;
+                    draw_status_bar(&winsize, cursor_row, cursor_col)?;
                 }
 
                 Key::ArrowRight => {
                     let _ = puts(b"\x1b[C"); // Move cursor right
                     cursor_col += 1;
+                    draw_status_bar(&winsize, cursor_row, cursor_col)?;
                 }
 
                 Key::ArrowLeft => {
                     if cursor_col > 0 {
                         let _ = puts(b"\x1b[D"); // Move cursor left
                         cursor_col -= 1;
+                        draw_status_bar(&winsize, cursor_row, cursor_col)?;
                     }
                 }
 
                 Key::Char(ch) => {
                     let _ = putchar(ch);
                     cursor_col += 1;
+                    draw_status_bar(&winsize, cursor_row, cursor_col)?;
                 }
             }
         }

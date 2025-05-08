@@ -53,6 +53,28 @@ jobs:
         name: code-coverage-report
         path: cobertura.xml
 
+    - name: Get binary size
+      run: |
+        size=$(stat -c%s "based")
+        echo $size > binary-size.txt
+
+    - name: Comment binary size on PR
+      if: github.event_name == 'pull_request'
+      run: |
+        size=$(stat -c%s "based")
+        body="Binary size: $size bytes"
+        curl -s -X POST \
+        -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+        -H "Content-Type: application/json" \
+        -d "{\"body\":\"$body\"}" \
+        "${{ github.event.pull_request.comments_url }}"
+
+    - name: Upload binary size
+      uses: actions/upload-artifact@v4
+      with:
+        name: binary-size
+        path: binary-size.txt
+
     - name: Upload binary
       uses: actions/upload-artifact@v4
       with:

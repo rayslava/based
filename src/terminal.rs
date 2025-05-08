@@ -245,3 +245,144 @@ pub fn exit_alternate_screen() -> SysResult {
     // ESC [ ? 1049 l - Restore cursor position and switch to normal screen
     puts(b"\x1b[?1049l")
 }
+
+// Move cursor to a specific position (0-based coordinates)
+pub fn move_cursor(row: u16, col: u16) -> SysResult {
+    // Format: ESC [ row+1 ; col+1 H
+    let mut buf = [0u8; 16];
+    let mut pos = 0;
+
+    // Start sequence
+    buf[pos] = b'\x1b';
+    buf[pos + 1] = b'[';
+    pos += 2;
+
+    // Row (+1 because ANSI is 1-based)
+    let row_num = row + 1;
+    pos += write_u16_to_buf(&mut buf[pos..], row_num);
+
+    // Separator
+    buf[pos] = b';';
+    pos += 1;
+
+    // Column (+1 because ANSI is 1-based)
+    let col_num = col + 1;
+    pos += write_u16_to_buf(&mut buf[pos..], col_num);
+
+    // End sequence
+    buf[pos] = b'H';
+    pos += 1;
+
+    // Write the sequence
+    puts(&buf[0..pos])
+}
+
+// Helper to write a u16 number to buffer, returns bytes written
+fn write_u16_to_buf(buf: &mut [u8], n: u16) -> usize {
+    // Quick return for 0
+    if n == 0 {
+        buf[0] = b'0';
+        return 1;
+    }
+
+    // Find highest divisor
+    let mut div = 1;
+    let mut tmp = n;
+    while tmp >= 10 {
+        div *= 10;
+        tmp /= 10;
+    }
+
+    // Write digits
+    let mut pos = 0;
+    while div > 0 {
+        buf[pos] = b'0' + ((n / div) % 10) as u8;
+        pos += 1;
+        div /= 10;
+    }
+
+    pos
+}
+
+// Set background color
+pub fn set_bg_color(color: u8) -> SysResult {
+    // Format: ESC [ 4 color m
+    let mut buf = [b'\x1b', b'[', b'4', 0, b'm'];
+    // Convert color to ascii
+    buf[3] = b'0' + color;
+    puts(&buf)
+}
+
+// Set foreground color
+pub fn set_fg_color(color: u8) -> SysResult {
+    // Format: ESC [ 3 color m
+    let mut buf = [b'\x1b', b'[', b'3', 0, b'm'];
+    // Convert color to ascii
+    buf[3] = b'0' + color;
+    puts(&buf)
+}
+
+// Reset colors to default
+pub fn reset_colors() -> SysResult {
+    // ESC [ 0 m
+    puts(b"\x1b[0m")
+}
+
+// Draw the status bar with cursor position
+pub fn draw_status_bar(winsize: &Winsize, row: u16, col: u16) -> SysResult {
+    // Make sure we have at least 3 rows (1 for status bar, 1 for command line, and 1+ for editing)
+    if winsize.rows < 3 {
+        return Ok(0);
+    }
+
+    // Save cursor position
+    puts(b"\x1b[s")?;
+
+    // Move to status bar line (second to last row)
+    move_cursor(winsize.rows - 2, 0)?;
+
+    // Set colors for status bar (white text on blue background)
+    set_bg_color(7)?;
+    set_fg_color(0)?;
+
+    // Initial status message - this has the cursor position
+    let mut initial_msg = [0u8; 64];
+    let mut pos = 0;
+
+    // Add cursor position text
+    let text = b" ROW: ";
+    for &b in text {
+        initial_msg[pos] = b;
+        pos += 1;
+    }
+
+    // Add row number
+    pos += write_u16_to_buf(&mut initial_msg[pos..], row);
+
+    // Add column text
+    let text = b", COL: ";
+    for &b in text {
+        initial_msg[pos] = b;
+        pos += 1;
+    }
+
+    // Add column number
+    pos += write_u16_to_buf(&mut initial_msg[pos..], col);
+
+    // Add trailing space
+    initial_msg[pos] = b' ';
+    pos += 1;
+
+    // Write the initial status message
+    puts(&initial_msg[0..pos])?;
+
+    // Clear to the end of line (makes sure status bar fills whole width)
+    // ESC [ K - Clear from cursor to end of line
+    puts(b"\x1b[K")?;
+
+    // Reset colors
+    reset_colors()?;
+
+    // Restore cursor position
+    puts(b"\x1b[u")
+}
