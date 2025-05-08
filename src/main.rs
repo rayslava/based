@@ -55,7 +55,7 @@ pub unsafe extern "C" fn _start() -> Result<(), usize> {
             puts(b"Entered raw mode. Press q to exit.\r\n")?;
 
             // Run the editor
-            run_editor();
+            run_editor()?;
 
             // Restore original settings
             set_termios(syscall::STDIN, TCSETSW, &orig_termios)?;

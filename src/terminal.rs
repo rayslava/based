@@ -1,4 +1,4 @@
-use crate::syscall::{SysResult, ioctl, putchar};
+use crate::syscall::{SysResult, ioctl, putchar, puts};
 use crate::termios::{
     BRKINT, CS8, ECHO, ICANON, ICRNL, IEXTEN, INPCK, ISIG, ISTRIP, IXON, OPOST, TCGETS, TCSETS,
     TIOCGWINSZ, Termios, VMIN, VTIME, Winsize,
@@ -171,4 +171,32 @@ mod tests {
         assert_eq!(termios.cc[VMIN], 1);
         assert_eq!(termios.cc[VTIME], 0);
     }
+
+    #[test]
+    fn test_clear_screen() {
+        let mut capture = OutputCapture::new();
+
+        // Define mock impl of clear_screen for testing
+        fn test_clear_screen_impl(capture: &mut OutputCapture) -> SysResult {
+            // Write the escape sequences
+            for &b in b"\x1b[2J\x1b[H" {
+                capture.capture(b)?;
+            }
+            Ok(10) // Return length of the sequence
+        }
+
+        // Call the test implementation
+        let result = test_clear_screen_impl(&mut capture);
+
+        // Check results
+        assert!(result.is_ok());
+        assert_eq!(capture.as_string(), "\x1b[2J\x1b[H");
+    }
+}
+
+// Clear the screen and position cursor at the top-left
+pub fn clear_screen() -> SysResult {
+    // ESC [ 2 J - Clear entire screen
+    // ESC [ H - Move cursor to home position (0,0)
+    puts(b"\x1b[2J\x1b[H")
 }

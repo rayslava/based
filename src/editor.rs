@@ -1,4 +1,5 @@
-use crate::syscall::{STDIN, STDOUT, putchar, puts, read};
+use crate::syscall::{STDIN, STDOUT, SysResult, putchar, puts, read};
+use crate::terminal::clear_screen;
 
 // Function to read one character
 fn read_char() -> Option<u8> {
@@ -66,8 +67,9 @@ fn read_key() -> Option<Key> {
 }
 
 // Simple editor implementation
-pub fn run_editor() {
+pub fn run_editor() -> Result<(), usize> {
     let mut running = true;
+    clear_screen()?;
 
     // Track cursor position
     let mut cursor_row = 0;
@@ -122,4 +124,5 @@ pub fn run_editor() {
             }
         }
     }
+    Ok(())
 }
