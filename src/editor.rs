@@ -266,6 +266,76 @@ impl EditorState {
             // Note: scroll_to_cursor is now called by the key handler
         }
     }
+
+    // Move cursor to beginning of line (Home/Ctrl+A)
+    fn cursor_home(&mut self) {
+        self.file_col = 0;
+        // Note: scroll_to_cursor is now called by the key handler
+    }
+
+    // Move cursor to end of line (End/Ctrl+E)
+    fn cursor_end(&mut self, file_buffer: &FileBuffer) {
+        self.file_col = file_buffer.line_length(self.file_row, self.tab_size);
+        // Note: scroll_to_cursor is now called by the key handler
+    }
+
+    // Page up (Alt+V): move cursor up by a screen's worth of lines
+    fn page_up(&mut self, file_buffer: &FileBuffer) {
+        // Get the number of lines to scroll (screen height)
+        let lines_to_scroll = self.editing_rows();
+
+        // First update scroll position
+        if self.scroll_row >= lines_to_scroll {
+            self.scroll_row -= lines_to_scroll;
+        } else {
+            self.scroll_row = 0;
+        }
+
+        // Then update cursor position
+        if self.file_row >= lines_to_scroll {
+            self.file_row -= lines_to_scroll;
+        } else {
+            self.file_row = 0;
+        }
+
+        // Make sure cursor doesn't go beyond the end of the current line
+        let current_line_len = file_buffer.line_length(self.file_row, self.tab_size);
+        if self.file_col > current_line_len {
+            self.file_col = current_line_len;
+        }
+
+        // Update cursor position based on scroll
+        self.cursor_row = self.file_row - self.scroll_row;
+    }
+
+    // Page down (Ctrl+V): move cursor down by a screen's worth of lines
+    fn page_down(&mut self, file_buffer: &FileBuffer) {
+        // Get the number of lines to scroll (screen height)
+        let lines_to_scroll = self.editing_rows();
+        let line_count = file_buffer.count_lines();
+
+        // Update cursor position, but don't go beyond the end of file
+        if self.file_row + lines_to_scroll < line_count {
+            self.file_row += lines_to_scroll;
+        } else {
+            self.file_row = line_count - 1;
+        }
+
+        // Update scroll position
+        let max_scroll_row = self.file_row - self.editing_rows() + 1;
+        if max_scroll_row > 0 {
+            self.scroll_row = max_scroll_row;
+        }
+
+        // Make sure cursor doesn't go beyond the end of the current line
+        let current_line_len = file_buffer.line_length(self.file_row, self.tab_size);
+        if self.file_col > current_line_len {
+            self.file_col = current_line_len;
+        }
+
+        // Update cursor position based on scroll
+        self.cursor_row = self.file_row - self.scroll_row;
+    }
 }
 
 // Draw the file content on the screen
@@ -282,9 +352,7 @@ fn draw_screen(state: &EditorState, file_buffer: &FileBuffer) -> SysResult {
         // We know i < available_rows_usize which came from a u16, so we can safely convert back
         move_cursor(i, 0)?;
 
-        // Clear the current line instead of the whole screen
         clear_line()?;
-
         let file_line_idx = state.scroll_row + i;
 
         if file_line_idx >= line_count {
@@ -294,7 +362,6 @@ fn draw_screen(state: &EditorState, file_buffer: &FileBuffer) -> SysResult {
 
         // Get the line from file buffer
         if let Some(line) = file_buffer.get_line(file_line_idx) {
-            // Skip lines with only newlines
             if line.is_empty() {
                 continue;
             }
@@ -302,6 +369,7 @@ fn draw_screen(state: &EditorState, file_buffer: &FileBuffer) -> SysResult {
             // Calculate how much to skip from the start (for horizontal scrolling)
             let mut chars_to_skip = state.scroll_col;
             let mut col = 0;
+            let mut screen_col = 0;
 
             // Display each character in the line
             for &byte in line {
@@ -321,15 +389,26 @@ fn draw_screen(state: &EditorState, file_buffer: &FileBuffer) -> SysResult {
                             chars_to_skip -= spaces;
                         } else {
                             // Draw partial spaces after the horizontal scroll point
-                            for _ in 0..(spaces - chars_to_skip) {
-                                putchar(b' ')?;
+                            let visible_spaces = spaces - chars_to_skip;
+                            for _ in 0..visible_spaces {
+                                if screen_col < state.winsize.cols as usize {
+                                    putchar(b' ')?;
+                                    screen_col += 1;
+                                } else {
+                                    break;
+                                }
                             }
                             chars_to_skip = 0;
                         }
                     } else {
                         // Draw spaces for tab
                         for _ in 0..spaces {
-                            putchar(b' ')?;
+                            if screen_col < state.winsize.cols as usize {
+                                putchar(b' ')?;
+                                screen_col += 1;
+                            } else {
+                                break;
+                            }
                         }
                     }
                 } else {
@@ -338,24 +417,17 @@ fn draw_screen(state: &EditorState, file_buffer: &FileBuffer) -> SysResult {
                     // Only print if we've scrolled past the horizontal skip point
                     if chars_to_skip > 0 {
                         chars_to_skip -= 1;
-                    } else {
+                    } else if screen_col < state.winsize.cols as usize {
                         putchar(byte)?;
+                        screen_col += 1;
+                    } else {
+                        break;
                     }
                 }
-
-                // Stop if we reach the edge of the screen
-                if col - state.scroll_col >= state.winsize.cols as usize {
-                    break;
-                }
             }
-
-            // No newlines needed since we're positioning cursor for each line
         }
     }
-
-    // Always position cursor, regardless of whether we redrew the screen
     move_cursor(state.cursor_row, state.cursor_col)?;
-
     Ok(0)
 }
 
@@ -380,50 +452,157 @@ enum Key {
     Backspace,
     Quit,
     Refresh,
+    Home,
+    End,
+    PageUp,
+    PageDown,
 }
 
 // Read a key, handling escape sequences and control characters
 fn read_key() -> Option<Key> {
-    if let Some(ch) = read_char() {
-        match ch {
-            // Quit key
-            b'q' => Some(Key::Quit),
+    // Read the first character
+    let ch = read_char()?;
 
-            // Enter key
-            b'\r' => Some(Key::Enter),
+    // Handle regular keys
+    match ch {
+        // Quit key
+        b'q' => Some(Key::Quit),
 
-            // Backspace
-            127 | 8 => Some(Key::Backspace),
+        // Enter key
+        b'\r' => Some(Key::Enter),
 
-            // Escape sequence
-            27 => {
-                // Detect arrow keys
-                if let Some(b'[') = read_char() {
-                    if let Some(ch) = read_char() {
-                        match ch {
-                            b'A' => return Some(Key::ArrowUp),
-                            b'B' => return Some(Key::ArrowDown),
-                            b'C' => return Some(Key::ArrowRight),
-                            b'D' => return Some(Key::ArrowLeft),
-                            _ => return Some(Key::Char(ch)),
+        // Backspace
+        127 | 8 => Some(Key::Backspace),
+
+        // Emacs key bindings - Control characters
+        1 => Some(Key::Home),       // C-a (beginning-of-line)
+        2 => Some(Key::ArrowLeft),  // C-b (backward-char)
+        5 => Some(Key::End),        // C-e (end-of-line)
+        6 => Some(Key::ArrowRight), // C-f (forward-char)
+        12 => Some(Key::Refresh),   // C-l (refresh screen)
+        14 => Some(Key::ArrowDown), // C-n (next-line)
+        16 => Some(Key::ArrowUp),   // C-p (previous-line)
+        22 => Some(Key::PageDown),  // C-v (page-down)
+
+        // Escape sequence
+        27 => {
+            // Read the second character of the escape sequence
+            let Some(second_ch) = read_char() else {
+                return Some(Key::Char(27));
+            };
+
+            match second_ch {
+                // Alt+v for PageUp (Emacs-style)
+                b'v' => Some(Key::PageUp),
+
+                // Standard escape sequences starting with ESC [
+                b'[' => {
+                    // Read the third character of the sequence
+
+                    let Some(third_ch) = read_char() else {
+                        return Some(Key::Char(second_ch));
+                    };
+
+                    match third_ch {
+                        // Arrow keys
+                        b'A' => Some(Key::ArrowUp),
+                        b'B' => Some(Key::ArrowDown),
+                        b'C' => Some(Key::ArrowRight),
+                        b'D' => Some(Key::ArrowLeft),
+                        b'H' => Some(Key::Home), // Home key
+                        b'F' => Some(Key::End),  // End key
+
+                        // Page Up: ESC [ 5 ~
+                        b'5' => {
+                            let Some(fourth_ch) = read_char() else {
+                                return Some(Key::Char(third_ch));
+                            };
+
+                            if fourth_ch == b'~' {
+                                return Some(Key::PageUp);
+                            }
+                            Some(Key::Char(fourth_ch))
                         }
+
+                        // Page Down: ESC [ 6 ~
+                        b'6' => {
+                            let Some(fourth_ch) = read_char() else {
+                                return Some(Key::Char(third_ch));
+                            };
+
+                            if fourth_ch == b'~' {
+                                return Some(Key::PageDown);
+                            }
+                            Some(Key::Char(fourth_ch))
+                        }
+
+                        // Home key: ESC [ 1 ~
+                        b'1' => {
+                            let Some(fourth_ch) = read_char() else {
+                                return Some(Key::Char(third_ch));
+                            };
+
+                            if fourth_ch == b'~' {
+                                return Some(Key::Home); // Home key on some terminals
+                            } else if fourth_ch == b';' {
+                                // Extended keys: ESC [ 1 ; X Y where X is modifier and Y is key
+                                // Skip modifier key
+                                let _ = read_char();
+
+                                // Read the key code
+                                if let Some(code) = read_char() {
+                                    match code {
+                                        b'A' => return Some(Key::ArrowUp),
+                                        b'B' => return Some(Key::ArrowDown),
+                                        b'C' => return Some(Key::ArrowRight),
+                                        b'D' => return Some(Key::ArrowLeft),
+                                        _ => return Some(Key::Char(code)),
+                                    }
+                                }
+                            }
+                            Some(Key::Char(fourth_ch))
+                        }
+
+                        // End key: ESC [ 4 ~
+                        b'4' => {
+                            let Some(fourth_ch) = read_char() else {
+                                return Some(Key::Char(third_ch));
+                            };
+
+                            if fourth_ch == b'~' {
+                                return Some(Key::End); // End key on some terminals
+                            }
+                            Some(Key::Char(fourth_ch))
+                        }
+
+                        _ => Some(Key::Char(third_ch)),
                     }
                 }
-                Some(Key::Char(ch))
+
+                // Alternative format for xterm/rxvt keys: ESC O X
+                b'O' => {
+                    let Some(third_ch) = read_char() else {
+                        return Some(Key::Char(second_ch));
+                    };
+
+                    match third_ch {
+                        b'A' => Some(Key::ArrowUp),    // Up arrow
+                        b'B' => Some(Key::ArrowDown),  // Down arrow
+                        b'C' => Some(Key::ArrowRight), // Right arrow
+                        b'D' => Some(Key::ArrowLeft),  // Left arrow
+                        b'H' => Some(Key::Home),       // Home
+                        b'F' => Some(Key::End),        // End
+                        _ => Some(Key::Char(third_ch)),
+                    }
+                }
+
+                // Could not recognize the escape sequence
+                _ => Some(Key::Char(second_ch)),
             }
-
-            // Emacs key bindings - Control characters
-            2 => Some(Key::ArrowLeft),  // C-b (backward-char)
-            6 => Some(Key::ArrowRight), // C-f (forward-char)
-            12 => Some(Key::Refresh),   // C-l (refresh screen)
-            14 => Some(Key::ArrowDown), // C-n (next-line)
-            16 => Some(Key::ArrowUp),   // C-p (previous-line)
-
-            // Regular character
-            _ => Some(Key::Char(ch)),
         }
-    } else {
-        None
+
+        // Regular character
+        _ => Some(Key::Char(ch)),
     }
 }
 
@@ -515,6 +694,30 @@ pub fn run_editor() -> Result<(), EditorError> {
 
                 Key::ArrowLeft => {
                     state.cursor_left(&file_buffer);
+                    state.scroll_to_cursor();
+                    draw_screen(&state, &file_buffer)?;
+                }
+
+                Key::Home => {
+                    state.cursor_home();
+                    state.scroll_to_cursor();
+                    draw_screen(&state, &file_buffer)?;
+                }
+
+                Key::End => {
+                    state.cursor_end(&file_buffer);
+                    state.scroll_to_cursor();
+                    draw_screen(&state, &file_buffer)?;
+                }
+
+                Key::PageUp => {
+                    state.page_up(&file_buffer);
+                    state.scroll_to_cursor();
+                    draw_screen(&state, &file_buffer)?;
+                }
+
+                Key::PageDown => {
+                    state.page_down(&file_buffer);
                     state.scroll_to_cursor();
                     draw_screen(&state, &file_buffer)?;
                 }
