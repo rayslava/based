@@ -644,19 +644,19 @@ pub fn run_editor() -> Result<(), EditorError> {
 
     let file_buffer: FileBuffer = {
         let Ok(fd) = open(file_path, O_RDONLY) else {
-            print_error(winsize, b"Error: Failed to open file.txt")?;
+            print_error(winsize, "Error: Failed to open file.txt")?;
             return Err(EditorError::OpenFile);
         };
 
         if fd == 0 {
-            print_error(winsize, b"Error: Failed to open file.txt")?;
+            print_error(winsize, "Error: Failed to open file.txt")?;
             return Err(EditorError::LoadFile);
         }
 
         let max_file_size = 1024 * 1024; // 1MB, enough for now
 
         let Ok(addr) = mmap(0, max_file_size, PROT_READ, MAP_PRIVATE, fd, 0) else {
-            print_error(winsize, b"Error: Failed to load file content")?;
+            print_error(winsize, "Error: Failed to load file content")?;
             return Err(EditorError::MMapFile);
         };
 
@@ -665,7 +665,7 @@ pub fn run_editor() -> Result<(), EditorError> {
 
     draw_screen(&state, &file_buffer)?;
     draw_status_bar(state.winsize, state.cursor_row, state.cursor_col)?;
-    print_message(winsize, b"File opened successfully")?;
+    print_message(winsize, "File opened successfully")?;
 
     let mut running = true;
 

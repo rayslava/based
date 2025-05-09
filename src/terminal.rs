@@ -1,4 +1,4 @@
-use crate::syscall::{SysResult, ioctl, putchar, puts};
+use crate::syscall::{SysResult, ioctl, putchar, puts, write_buf};
 use crate::termios::{
     BRKINT, CS8, ECHO, ICANON, ICRNL, IEXTEN, INPCK, ISIG, ISTRIP, IXON, OPOST, TCGETS, TIOCGWINSZ,
     Termios, VMIN, VTIME, Winsize,
@@ -59,22 +59,22 @@ pub fn write_number(mut n: usize) {
 pub fn clear_screen() -> SysResult {
     // ESC [ 2 J - Clear entire screen
     // ESC [ H - Move cursor to home position (0,0)
-    puts(b"\x1b[2J\x1b[H")
+    puts("\x1b[2J\x1b[H")
 }
 
 pub fn clear_line() -> SysResult {
     // ESC [ K - Clear from cursor to end of line
-    puts(b"\x1b[K")
+    puts("\x1b[K")
 }
 
 pub fn enter_alternate_screen() -> SysResult {
     // ESC [ ? 1049 h - Save cursor position and switch to alternate screen
-    puts(b"\x1b[?1049h")
+    puts("\x1b[?1049h")
 }
 
 pub fn exit_alternate_screen() -> SysResult {
     // ESC [ ? 1049 l - Restore cursor position and switch to normal screen
-    puts(b"\x1b[?1049l")
+    puts("\x1b[?1049l")
 }
 
 // Move cursor to a specific position (0-based coordinates)
@@ -105,7 +105,7 @@ pub fn move_cursor(row: usize, col: usize) -> SysResult {
     pos += 1;
 
     // Write the sequence
-    puts(&buf[0..pos])
+    write_buf(&buf[0..pos])
 }
 
 // Helper to write a usize number to buffer, returns bytes written
@@ -145,7 +145,7 @@ pub fn set_bg_color(color: u8) -> SysResult {
     let mut buf = [b'\x1b', b'[', b'4', 0, b'm'];
     // Convert color to ascii
     buf[3] = b'0' + color;
-    puts(&buf)
+    write_buf(&buf)
 }
 
 pub fn set_fg_color(color: u8) -> SysResult {
@@ -153,53 +153,53 @@ pub fn set_fg_color(color: u8) -> SysResult {
     let mut buf = [b'\x1b', b'[', b'3', 0, b'm'];
     // Convert color to ascii
     buf[3] = b'0' + color;
-    puts(&buf)
+    write_buf(&buf)
 }
 
 pub fn reset_colors() -> SysResult {
     // ESC [ 0 m
-    puts(b"\x1b[0m")
+    puts("\x1b[0m")
 }
 
 pub fn set_bold() -> SysResult {
     // ESC [ 1 m - Bold text
-    puts(b"\x1b[1m")
+    puts("\x1b[1m")
 }
 
 // Print a message to the last line of the screen
-pub fn print_status(winsize: Winsize, msg: &[u8]) -> SysResult {
+pub fn print_status(winsize: Winsize, msg: &str) -> SysResult {
     // Save cursor position
-    puts(b"\x1b[s")?;
+    puts("\x1b[s")?;
 
     // Move to the last row
     move_cursor(winsize.rows as usize - 1, 0)?;
 
     // Clear the line
-    puts(b"\x1b[K")?;
+    puts("\x1b[K")?;
 
     // Print the message
     puts(msg)?;
 
     // Restore cursor position
-    puts(b"\x1b[u")
+    puts("\x1b[u")
 }
 
 // Print a normal message to the status line
-pub fn print_message(winsize: Winsize, msg: &[u8]) -> SysResult {
+pub fn print_message(winsize: Winsize, msg: &str) -> SysResult {
     print_status(winsize, msg)
 }
 
 #[allow(dead_code)]
 // Print a warning message (yellow) to the status line
-pub fn print_warning(winsize: Winsize, msg: &[u8]) -> SysResult {
+pub fn print_warning(winsize: Winsize, msg: &str) -> SysResult {
     // Save cursor position
-    puts(b"\x1b[s")?;
+    puts("\x1b[s")?;
 
     // Move to the last row
     move_cursor(winsize.rows as usize - 1, 0)?;
 
     // Clear the line
-    puts(b"\x1b[K")?;
+    puts("\x1b[K")?;
 
     // Set yellow color
     set_fg_color(3)?;
@@ -211,19 +211,19 @@ pub fn print_warning(winsize: Winsize, msg: &[u8]) -> SysResult {
     reset_colors()?;
 
     // Restore cursor position
-    puts(b"\x1b[u")
+    puts("\x1b[u")
 }
 
 // Print an error message (bold red) to the status line
-pub fn print_error(winsize: Winsize, msg: &[u8]) -> SysResult {
+pub fn print_error(winsize: Winsize, msg: &str) -> SysResult {
     // Save cursor position
-    puts(b"\x1b[s")?;
+    puts("\x1b[s")?;
 
     // Move to the last row
     move_cursor(winsize.rows as usize - 1, 0)?;
 
     // Clear the line
-    puts(b"\x1b[K")?;
+    puts("\x1b[K")?;
 
     // Set bold red
     set_bold()?;
@@ -236,7 +236,7 @@ pub fn print_error(winsize: Winsize, msg: &[u8]) -> SysResult {
     reset_colors()?;
 
     // Restore cursor position
-    puts(b"\x1b[u")
+    puts("\x1b[u")
 }
 
 pub fn draw_status_bar(winsize: Winsize, row: usize, col: usize) -> SysResult {
@@ -246,7 +246,7 @@ pub fn draw_status_bar(winsize: Winsize, row: usize, col: usize) -> SysResult {
     }
 
     // Save cursor position
-    puts(b"\x1b[s")?;
+    puts("\x1b[s")?;
 
     // Move to status bar line (second to last row)
     move_cursor(winsize.rows as usize - 2, 0)?;
@@ -284,17 +284,17 @@ pub fn draw_status_bar(winsize: Winsize, row: usize, col: usize) -> SysResult {
     pos += 1;
 
     // Write the initial status message
-    puts(&initial_msg[0..pos])?;
+    write_buf(&initial_msg[0..pos])?;
 
     // Clear to the end of line (makes sure status bar fills whole width)
     // ESC [ K - Clear from cursor to end of line
-    puts(b"\x1b[K")?;
+    puts("\x1b[K")?;
 
     // Reset colors
     reset_colors()?;
 
     // Restore cursor position
-    puts(b"\x1b[u")
+    puts("\x1b[u")
 }
 
 #[cfg(test)]
@@ -558,7 +558,7 @@ pub mod tests {
 
         // Test print_status
         enable_test_mode();
-        let result = print_status(winsize, b"Test status message");
+        let result = print_status(winsize, "Test status message");
 
         unsafe {
             assert!(result.is_ok());
@@ -579,7 +579,7 @@ pub mod tests {
 
         // Test print_message (which calls print_status)
         enable_test_mode();
-        let result = print_message(winsize, b"Test normal message");
+        let result = print_message(winsize, "Test normal message");
 
         unsafe {
             assert!(result.is_ok());
@@ -591,7 +591,7 @@ pub mod tests {
 
         // Test print_warning
         enable_test_mode();
-        let result = print_warning(winsize, b"Test warning message");
+        let result = print_warning(winsize, "Test warning message");
 
         unsafe {
             assert!(result.is_ok());
@@ -604,7 +604,7 @@ pub mod tests {
 
         // Test print_error
         enable_test_mode();
-        let result = print_error(winsize, b"Test error message");
+        let result = print_error(winsize, "Test error message");
 
         unsafe {
             assert!(result.is_ok());

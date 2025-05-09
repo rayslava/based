@@ -89,16 +89,29 @@ pub fn ioctl(fd: usize, request: usize, arg: usize) -> SysResult {
 }
 
 #[cfg(not(test))]
-pub fn puts(msg: &[u8]) -> SysResult {
-    write(STDOUT, msg)
+pub fn write_buf(buf: &[u8]) -> SysResult {
+    write(STDOUT, buf)
 }
 
 // Need to match the signature
 #[allow(clippy::unnecessary_wraps)]
 #[cfg(test)]
-pub fn puts(msg: &[u8]) -> SysResult {
+pub fn write_buf(buf: &[u8]) -> SysResult {
     use crate::terminal::tests::handle_test_puts;
-    Ok(handle_test_puts(msg))
+    Ok(handle_test_puts(buf))
+}
+
+#[cfg(not(test))]
+pub fn puts(msg: &str) -> SysResult {
+    write(STDOUT, msg.as_bytes())
+}
+
+// Need to match the signature
+#[allow(clippy::unnecessary_wraps)]
+#[cfg(test)]
+pub fn puts(msg: &str) -> SysResult {
+    use crate::terminal::tests::handle_test_puts;
+    Ok(handle_test_puts(msg.as_bytes()))
 }
 
 // Write a single byte
