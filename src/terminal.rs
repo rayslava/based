@@ -62,6 +62,11 @@ pub fn clear_screen() -> SysResult {
     puts(b"\x1b[2J\x1b[H")
 }
 
+pub fn clear_line() -> SysResult {
+    // ESC [ K - Clear from cursor to end of line
+    puts(b"\x1b[K")
+}
+
 pub fn enter_alternate_screen() -> SysResult {
     // ESC [ ? 1049 h - Save cursor position and switch to alternate screen
     puts(b"\x1b[?1049h")

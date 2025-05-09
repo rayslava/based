@@ -2,8 +2,8 @@ use crate::syscall::{
     MAP_PRIVATE, O_RDONLY, PROT_READ, STDIN, STDOUT, SysResult, mmap, open, putchar, read,
 };
 use crate::terminal::{
-    clear_screen, draw_status_bar, enter_alternate_screen, exit_alternate_screen, get_winsize,
-    move_cursor, print_error,
+    clear_line, clear_screen, draw_status_bar, enter_alternate_screen, exit_alternate_screen,
+    get_winsize, move_cursor, print_error,
 };
 use crate::termios::Winsize;
 
@@ -181,10 +181,7 @@ impl EditorState {
     }
 
     // Adjust scrolling to make sure cursor is visible
-    fn scroll_to_cursor(&mut self, _file_buffer: &FileBuffer) -> bool {
-        let old_scroll_row = self.scroll_row;
-        let old_scroll_col = self.scroll_col;
-
+    fn scroll_to_cursor(&mut self) {
         // If cursor is above the visible area, scroll up
         if self.file_row < self.scroll_row {
             self.scroll_row = self.file_row;
@@ -208,9 +205,6 @@ impl EditorState {
 
         self.cursor_row = self.file_row - self.scroll_row;
         self.cursor_col = self.file_col - self.scroll_col;
-
-        // Return true if scrolling actually happened
-        old_scroll_row != self.scroll_row || old_scroll_col != self.scroll_col
     }
 
     // Move cursor up
@@ -275,90 +269,87 @@ impl EditorState {
 }
 
 // Draw the file content on the screen
-fn draw_screen(state: &EditorState, file_buffer: &FileBuffer, clear: bool) -> SysResult {
-    // Only clear and redraw when necessary (scrolling occurred)
-    if clear {
-        // Clear the screen
-        clear_screen()?;
+fn draw_screen(state: &EditorState, file_buffer: &FileBuffer) -> SysResult {
+    // Calculate available height for content
+    let available_rows = state.editing_rows();
+    // Convert to usize for iterator
+    let line_count = file_buffer.count_lines();
 
-        // Calculate available height for content
-        let available_rows = state.editing_rows();
-        // Convert to usize for iterator
-        let line_count = file_buffer.count_lines();
+    // Draw lines from the file buffer
+    // Using a manually bounded loop to avoid clippy warnings
+    for i in 0..available_rows {
+        // Position cursor at start of each line
+        // We know i < available_rows_usize which came from a u16, so we can safely convert back
+        move_cursor(i, 0)?;
 
-        // Draw lines from the file buffer
-        // Using a manually bounded loop to avoid clippy warnings
-        for i in 0..available_rows {
-            // Position cursor at start of each line
-            // We know i < available_rows_usize which came from a u16, so we can safely convert back
-            move_cursor(i, 0)?;
+        // Clear the current line instead of the whole screen
+        clear_line()?;
 
-            let file_line_idx = state.scroll_row + i;
+        let file_line_idx = state.scroll_row + i;
 
-            if file_line_idx >= line_count {
-                // We're past the end of file, leave the rest of screen empty
+        if file_line_idx >= line_count {
+            // We're past the end of file, leave the rest of screen empty
+            continue;
+        }
+
+        // Get the line from file buffer
+        if let Some(line) = file_buffer.get_line(file_line_idx) {
+            // Skip lines with only newlines
+            if line.is_empty() {
                 continue;
             }
 
-            // Get the line from file buffer
-            if let Some(line) = file_buffer.get_line(file_line_idx) {
-                // Skip lines with only newlines
-                if line.is_empty() {
-                    continue;
+            // Calculate how much to skip from the start (for horizontal scrolling)
+            let mut chars_to_skip = state.scroll_col;
+            let mut col = 0;
+
+            // Display each character in the line
+            for &byte in line {
+                if byte == 0 {
+                    // Stop at null byte
+                    break;
                 }
 
-                // Calculate how much to skip from the start (for horizontal scrolling)
-                let mut chars_to_skip = state.scroll_col;
-                let mut col = 0;
+                if byte == b'\t' {
+                    // Handle tabs - convert to spaces
+                    let spaces = state.tab_size - (col % state.tab_size);
+                    col += spaces;
 
-                // Display each character in the line
-                for &byte in line {
-                    if byte == 0 {
-                        // Stop at null byte
-                        break;
-                    }
-
-                    if byte == b'\t' {
-                        // Handle tabs - convert to spaces
-                        let spaces = state.tab_size - (col % state.tab_size);
-                        col += spaces;
-
-                        // Skip if we're still scrolled horizontally
-                        if chars_to_skip > 0 {
-                            if chars_to_skip >= spaces {
-                                chars_to_skip -= spaces;
-                            } else {
-                                // Draw partial spaces after the horizontal scroll point
-                                for _ in 0..(spaces - chars_to_skip) {
-                                    putchar(b' ')?;
-                                }
-                                chars_to_skip = 0;
-                            }
+                    // Skip if we're still scrolled horizontally
+                    if chars_to_skip > 0 {
+                        if chars_to_skip >= spaces {
+                            chars_to_skip -= spaces;
                         } else {
-                            // Draw spaces for tab
-                            for _ in 0..spaces {
+                            // Draw partial spaces after the horizontal scroll point
+                            for _ in 0..(spaces - chars_to_skip) {
                                 putchar(b' ')?;
                             }
+                            chars_to_skip = 0;
                         }
                     } else {
-                        col += 1;
-
-                        // Only print if we've scrolled past the horizontal skip point
-                        if chars_to_skip > 0 {
-                            chars_to_skip -= 1;
-                        } else {
-                            putchar(byte)?;
+                        // Draw spaces for tab
+                        for _ in 0..spaces {
+                            putchar(b' ')?;
                         }
                     }
+                } else {
+                    col += 1;
 
-                    // Stop if we reach the edge of the screen
-                    if col - state.scroll_col >= state.winsize.cols as usize {
-                        break;
+                    // Only print if we've scrolled past the horizontal skip point
+                    if chars_to_skip > 0 {
+                        chars_to_skip -= 1;
+                    } else {
+                        putchar(byte)?;
                     }
                 }
 
-                // No newlines needed since we're positioning cursor for each line
+                // Stop if we reach the edge of the screen
+                if col - state.scroll_col >= state.winsize.cols as usize {
+                    break;
+                }
             }
+
+            // No newlines needed since we're positioning cursor for each line
         }
     }
 
@@ -388,6 +379,7 @@ enum Key {
     Enter,
     Backspace,
     Quit,
+    Refresh,
 }
 
 // Read a key, handling escape sequences and control characters
@@ -423,6 +415,7 @@ fn read_key() -> Option<Key> {
             // Emacs key bindings - Control characters
             2 => Some(Key::ArrowLeft),  // C-b (backward-char)
             6 => Some(Key::ArrowRight), // C-f (forward-char)
+            12 => Some(Key::Refresh),   // C-l (refresh screen)
             14 => Some(Key::ArrowDown), // C-n (next-line)
             16 => Some(Key::ArrowUp),   // C-p (previous-line)
 
@@ -491,7 +484,7 @@ pub fn run_editor() -> Result<(), EditorError> {
         FileBuffer::load_from_mmap(addr, max_file_size)?
     };
 
-    draw_screen(&state, &file_buffer, true)?;
+    draw_screen(&state, &file_buffer)?;
     draw_status_bar(state.winsize, state.cursor_row, state.cursor_col)?;
     print_message(winsize, b"File opened successfully")?;
 
@@ -504,60 +497,49 @@ pub fn run_editor() -> Result<(), EditorError> {
 
                 Key::ArrowUp => {
                     state.cursor_up(&file_buffer);
-                    // Only clear screen if scrolling occurred
-                    let did_scroll = state.scroll_to_cursor(&file_buffer);
-                    draw_screen(&state, &file_buffer, did_scroll)?;
-                    // Print debug info
+                    state.scroll_to_cursor();
+                    draw_screen(&state, &file_buffer)?;
                 }
 
                 Key::ArrowDown => {
                     state.cursor_down(&file_buffer);
-                    // Only clear screen if scrolling occurred
-                    let did_scroll = state.scroll_to_cursor(&file_buffer);
-                    draw_screen(&state, &file_buffer, did_scroll)?;
-                    // Add debug info for all key presses
+                    state.scroll_to_cursor();
+                    draw_screen(&state, &file_buffer)?;
                 }
 
                 Key::ArrowRight => {
                     state.cursor_right(&file_buffer);
-                    // Only clear screen if scrolling occurred
-                    let did_scroll = state.scroll_to_cursor(&file_buffer);
-                    draw_screen(&state, &file_buffer, did_scroll)?;
-                    // Add debug info for all key presses
+                    state.scroll_to_cursor();
+                    draw_screen(&state, &file_buffer)?;
                 }
 
                 Key::ArrowLeft => {
                     state.cursor_left(&file_buffer);
-                    // Only clear screen if scrolling occurred
-                    let did_scroll = state.scroll_to_cursor(&file_buffer);
-                    draw_screen(&state, &file_buffer, did_scroll)?;
-                    // Add debug info for all key presses
+                    state.scroll_to_cursor();
+                    draw_screen(&state, &file_buffer)?;
                 }
 
                 Key::Enter => {
-                    // In a full editor, this would insert a newline
-                    // For now, we just move the cursor down and to column 0
                     let line_count = file_buffer.count_lines();
                     if state.file_row + 1 < line_count {
                         state.file_row += 1;
                         state.file_col = 0;
-                        let did_scroll = state.scroll_to_cursor(&file_buffer);
-                        // Only clear screen if scrolling occurred
-                        draw_screen(&state, &file_buffer, did_scroll)?;
-                        // Add debug info for all key presses
+                        state.scroll_to_cursor();
+                        draw_screen(&state, &file_buffer)?;
                     }
                 }
 
                 Key::Backspace => {
-                    // In a full editor, this would delete characters
-                    // For now, just move the cursor left
                     if state.file_col > 0 {
                         state.file_col -= 1;
-                        let did_scroll = state.scroll_to_cursor(&file_buffer);
-                        // Only clear screen if scrolling occurred
-                        draw_screen(&state, &file_buffer, did_scroll)?;
-                        // Add debug info for all key presses
+                        state.scroll_to_cursor();
+                        draw_screen(&state, &file_buffer)?;
                     }
+                }
+
+                Key::Refresh => {
+                    clear_screen()?;
+                    draw_screen(&state, &file_buffer)?;
                 }
 
                 Key::Char(_) => {
@@ -603,7 +585,7 @@ pub mod tests {
     }
 
     #[test]
-    fn test_read_key() {
+    fn test_read_key_regular_chars() {
         struct TestCase {
             name: &'static str,
             input: &'static [u8],
@@ -637,6 +619,27 @@ pub mod tests {
                 expected: Some(Key::Quit),
             },
             TestCase {
+                name: "no input",
+                input: &[],
+                expected: None,
+            },
+        ];
+
+        for tc in test_cases {
+            run_key_test(tc.name, tc.input, tc.expected.as_ref());
+        }
+    }
+
+    #[test]
+    fn test_read_key_escape_sequences() {
+        struct TestCase {
+            name: &'static str,
+            input: &'static [u8],
+            expected: Option<Key>,
+        }
+
+        let test_cases = [
+            TestCase {
                 name: "arrow up (escape sequence)",
                 input: &[27, b'[', b'A'],
                 expected: Some(Key::ArrowUp),
@@ -666,6 +669,22 @@ pub mod tests {
                 input: &[27],
                 expected: Some(Key::Char(27)),
             },
+        ];
+
+        for tc in test_cases {
+            run_key_test(tc.name, tc.input, tc.expected.as_ref());
+        }
+    }
+
+    #[test]
+    fn test_read_key_control_chars() {
+        struct TestCase {
+            name: &'static str,
+            input: &'static [u8],
+            expected: Option<Key>,
+        }
+
+        let test_cases = [
             TestCase {
                 name: "Ctrl+B (left)",
                 input: &[2],
@@ -677,6 +696,11 @@ pub mod tests {
                 expected: Some(Key::ArrowRight),
             },
             TestCase {
+                name: "Ctrl+L (refresh)",
+                input: &[12],
+                expected: Some(Key::Refresh),
+            },
+            TestCase {
                 name: "Ctrl+N (down)",
                 input: &[14],
                 expected: Some(Key::ArrowDown),
@@ -686,29 +710,28 @@ pub mod tests {
                 input: &[16],
                 expected: Some(Key::ArrowUp),
             },
-            TestCase {
-                name: "no input",
-                input: &[],
-                expected: None,
-            },
         ];
 
         for tc in test_cases {
-            // Set test input
-            set_test_input(tc.input);
-
-            // Call the function
-            let result = read_key();
-
-            // Assert result
-            assert_eq!(
-                result, tc.expected,
-                "Test case '{}' failed: expected {:?}, got {:?}",
-                tc.name, tc.expected, result
-            );
-
-            // Clear test input for next test
-            clear_test_input();
+            run_key_test(tc.name, tc.input, tc.expected.as_ref());
         }
+    }
+
+    fn run_key_test(name: &str, input: &[u8], expected: Option<&Key>) {
+        // Set test input
+        set_test_input(input);
+
+        // Call the function
+        let result = read_key();
+
+        // Assert result
+        assert_eq!(
+            result.as_ref(),
+            expected,
+            "Test case '{name}' failed: expected {expected:?}, got {result:?}"
+        );
+
+        // Clear test input for next test
+        clear_test_input();
     }
 }
