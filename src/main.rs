@@ -12,7 +12,7 @@ mod termios;
 
 use editor::run_editor;
 use syscall::{exit, puts};
-use terminal::{get_termios, get_winsize, set_raw_mode, set_termios};
+use terminal::{get_termios, get_winsize, set_raw_mode, set_termios, write_number};
 use termios::{TCSETS, TCSETSW, Termios, Winsize};
 
 #[cfg(not(test))]
@@ -40,12 +40,6 @@ fn main() -> Result<(), usize> {
     let mut winsize = Winsize::new();
 
     if get_winsize(syscall::STDOUT, &mut winsize).is_ok() {
-        puts(b"Terminal size: ")?;
-        terminal::write_number(winsize.rows);
-        puts(b"x")?;
-        terminal::write_number(winsize.cols);
-        puts(b"\r\n")?;
-
         puts(b"Ready to open file.txt using mmap\r\n")?;
     } else {
         puts(b"Could not get terminal size\r\n")?;
@@ -67,7 +61,16 @@ fn main() -> Result<(), usize> {
             puts(b"Opening file.txt with mmap and displaying its contents.\r\n")?;
 
             // Run the editor
-            run_editor()?;
+            match run_editor() {
+                Ok(()) => {}
+                Err(e) => {
+                    puts(b"Error\r\n")?;
+                    match e {
+                        editor::EditorError::SysError(n) => write_number(n),
+                        _ => todo!(),
+                    }
+                }
+            }
 
             // Restore original settings
             set_termios(syscall::STDIN, TCSETSW, &orig_termios)?;

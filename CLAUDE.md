@@ -19,6 +19,8 @@ and no libc is used either. Only Linux syscalls.
 - Always use `make fix` after introducing changes into source files.
 - Always use `make check` to verify that no issues happened in source code
   after introducing changes into sources files.
+- Do not add allows for clippy in any case. Rework the code, refactor the
+  functions, but do not turn off any clippy checks.
 
 # Build process
 

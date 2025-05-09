@@ -34,21 +34,22 @@ pub fn set_raw_mode(termios: &mut Termios) {
     termios.cc[VTIME] = 0; // No timeout
 }
 
-pub fn write_number(mut n: u16) {
+pub fn write_number(mut n: usize) {
     if n == 0 {
         let _ = putchar(b'0');
         return;
     }
-
-    let mut digits = [0u8; 5];
+    let mut digits = [0u8; 20];
     let mut i = 0;
 
-    while n > 0 && i < 5 {
-        digits[i] = (n % 10) as u8 + b'0';
-        n /= 10;
+    while n > 0 && i < 20 {
+        let quotient = n / 10;
+        let remainder = n - (quotient * 10);
+        digits[i] = b'0' + remainder.to_le_bytes()[0];
+        n = quotient;
         i += 1;
     }
-
+    // Output digits in correct order
     while i > 0 {
         i -= 1;
         let _ = putchar(digits[i]);
@@ -71,26 +72,8 @@ pub fn exit_alternate_screen() -> SysResult {
     puts(b"\x1b[?1049l")
 }
 
-pub fn cursor_home() -> SysResult {
-    // ESC [ H - Move the cursor to 0, 0
-    puts(b"\x1b[H")
-}
-
-pub fn cursor_up() -> SysResult {
-    puts(b"\x1b[A")
-}
-pub fn cursor_down() -> SysResult {
-    puts(b"\x1b[B")
-}
-pub fn cursor_left() -> SysResult {
-    puts(b"\x1b[D")
-}
-pub fn cursor_right() -> SysResult {
-    puts(b"\x1b[C")
-}
-
 // Move cursor to a specific position (0-based coordinates)
-pub fn move_cursor(row: u16, col: u16) -> SysResult {
+pub fn move_cursor(row: usize, col: usize) -> SysResult {
     // Format: ESC [ row+1 ; col+1 H
     let mut buf = [0u8; 16];
     let mut pos = 0;
@@ -102,7 +85,7 @@ pub fn move_cursor(row: u16, col: u16) -> SysResult {
 
     // Row (+1 because ANSI is 1-based)
     let row_num = row + 1;
-    pos += write_u16_to_buf(&mut buf[pos..], row_num);
+    pos += write_usize_to_buf(&mut buf[pos..], row_num);
 
     // Separator
     buf[pos] = b';';
@@ -110,7 +93,7 @@ pub fn move_cursor(row: u16, col: u16) -> SysResult {
 
     // Column (+1 because ANSI is 1-based)
     let col_num = col + 1;
-    pos += write_u16_to_buf(&mut buf[pos..], col_num);
+    pos += write_usize_to_buf(&mut buf[pos..], col_num);
 
     // End sequence
     buf[pos] = b'H';
@@ -120,28 +103,33 @@ pub fn move_cursor(row: u16, col: u16) -> SysResult {
     puts(&buf[0..pos])
 }
 
-// Helper to write a u16 number to buffer, returns bytes written
-fn write_u16_to_buf(buf: &mut [u8], n: u16) -> usize {
-    // Quick return for 0
+// Helper to write a usize number to buffer, returns bytes written
+fn write_usize_to_buf(buf: &mut [u8], n: usize) -> usize {
     if n == 0 {
         buf[0] = b'0';
         return 1;
     }
 
-    // Find highest divisor
-    let mut div = 1;
-    let mut tmp = n;
-    while tmp >= 10 {
-        div *= 10;
-        tmp /= 10;
+    let mut digits = [0u8; 20]; // Maximum usize digits (64-bit)
+    let mut digit_count = 0;
+    let mut num = n;
+
+    // Collect digits in reverse order
+    while num > 0 {
+        let quotient = num / 10;
+        let remainder = num - (quotient * 10);
+        digits[digit_count] = b'0' + remainder.to_le_bytes()[0];
+
+        num = quotient;
+        digit_count += 1;
     }
 
-    // Write digits
+    // Write digits in straight order
     let mut pos = 0;
-    while div > 0 {
-        buf[pos] = b'0' + ((n / div) % 10) as u8;
+    while digit_count > 0 {
+        digit_count -= 1;
+        buf[pos] = digits[digit_count];
         pos += 1;
-        div /= 10;
     }
 
     pos
@@ -179,7 +167,7 @@ pub fn print_status(winsize: Winsize, msg: &[u8]) -> SysResult {
     puts(b"\x1b[s")?;
 
     // Move to the last row
-    move_cursor(winsize.rows - 1, 0)?;
+    move_cursor(winsize.rows as usize - 1, 0)?;
 
     // Clear the line
     puts(b"\x1b[K")?;
@@ -196,13 +184,14 @@ pub fn print_message(winsize: Winsize, msg: &[u8]) -> SysResult {
     print_status(winsize, msg)
 }
 
+#[allow(dead_code)]
 // Print a warning message (yellow) to the status line
 pub fn print_warning(winsize: Winsize, msg: &[u8]) -> SysResult {
     // Save cursor position
     puts(b"\x1b[s")?;
 
     // Move to the last row
-    move_cursor(winsize.rows - 1, 0)?;
+    move_cursor(winsize.rows as usize - 1, 0)?;
 
     // Clear the line
     puts(b"\x1b[K")?;
@@ -226,7 +215,7 @@ pub fn print_error(winsize: Winsize, msg: &[u8]) -> SysResult {
     puts(b"\x1b[s")?;
 
     // Move to the last row
-    move_cursor(winsize.rows - 1, 0)?;
+    move_cursor(winsize.rows as usize - 1, 0)?;
 
     // Clear the line
     puts(b"\x1b[K")?;
@@ -245,8 +234,8 @@ pub fn print_error(winsize: Winsize, msg: &[u8]) -> SysResult {
     puts(b"\x1b[u")
 }
 
-pub fn draw_status_bar(winsize: Winsize, row: u16, col: u16) -> SysResult {
-    // Make sure we have at least 3 rows (1 for status bar, 1 for command line, and 1+ for editing)
+pub fn draw_status_bar(winsize: Winsize, row: usize, col: usize) -> SysResult {
+    // Make sure we have at least 3 rows (1 for status bar, 1 for message line, and 1+ for editing)
     if winsize.rows < 3 {
         return Ok(0);
     }
@@ -255,7 +244,7 @@ pub fn draw_status_bar(winsize: Winsize, row: u16, col: u16) -> SysResult {
     puts(b"\x1b[s")?;
 
     // Move to status bar line (second to last row)
-    move_cursor(winsize.rows - 2, 0)?;
+    move_cursor(winsize.rows as usize - 2, 0)?;
 
     // Set colors for status bar (white text on blue background)
     set_bg_color(7)?;
@@ -273,7 +262,7 @@ pub fn draw_status_bar(winsize: Winsize, row: u16, col: u16) -> SysResult {
     }
 
     // Add row number
-    pos += write_u16_to_buf(&mut initial_msg[pos..], row);
+    pos += write_usize_to_buf(&mut initial_msg[pos..], row);
 
     // Add column text
     let text = b", COL: ";
@@ -283,7 +272,7 @@ pub fn draw_status_bar(winsize: Winsize, row: u16, col: u16) -> SysResult {
     }
 
     // Add column number
-    pos += write_u16_to_buf(&mut initial_msg[pos..], col);
+    pos += write_usize_to_buf(&mut initial_msg[pos..], col);
 
     // Add trailing space
     initial_msg[pos] = b' ';
@@ -390,7 +379,7 @@ pub mod tests {
 
         for (input, expected, expected_len) in test_cases {
             let mut buf = [0u8; 16];
-            let len = write_u16_to_buf(&mut buf, input);
+            let len = write_usize_to_buf(&mut buf, input);
 
             assert_eq!(
                 len, expected_len,
@@ -420,10 +409,10 @@ pub mod tests {
             buf[pos] = b'\x1b';
             buf[pos + 1] = b'[';
             pos += 2;
-            pos += write_u16_to_buf(&mut buf[pos..], row + 1);
+            pos += write_usize_to_buf(&mut buf[pos..], row + 1);
             buf[pos] = b';';
             pos += 1;
-            pos += write_u16_to_buf(&mut buf[pos..], col + 1);
+            pos += write_usize_to_buf(&mut buf[pos..], col + 1);
             buf[pos] = b'H';
             pos += 1;
             let output = std::str::from_utf8(&buf[0..pos]).unwrap();
