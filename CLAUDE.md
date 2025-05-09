@@ -16,7 +16,9 @@ and no libc is used either. Only Linux syscalls.
   changed for testing purposes if needed.
 - The test module must be in the end of file. All the newly created tests are
   appended to the end of the test module.
-- Always use `make check` to verify that no issues happened in source code.
+- Always use `make fix` after introducing changes into source files.
+- Always use `make check` to verify that no issues happened in source code
+  after introducing changes into sources files.
 
 # Build process
 

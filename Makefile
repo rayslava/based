@@ -23,3 +23,8 @@ check:
 	cargo check
 	cargo fmt --all -- --check
 	cargo clippy --all-targets --all-features -- -W clippy::pedantic
+
+fix:
+	cargo fmt --all
+	cargo fix --all --all-features --allow-dirty --allow-staged
+	cargo clippy --fix --all-targets --all-features --allow-dirty --allow-staged -- -W clippy::pedantic
