@@ -1,6 +1,9 @@
-use crate::syscall::{STDIN, STDOUT, putchar, puts, read};
+use crate::syscall::{
+    MAP_PRIVATE, O_RDONLY, PROT_READ, STDIN, STDOUT, close, mmap, open, putchar, puts, read,
+};
 use crate::terminal::{
-    clear_screen, draw_status_bar, enter_alternate_screen, exit_alternate_screen, get_winsize,
+    clear_screen, cursor_home, draw_status_bar, enter_alternate_screen, exit_alternate_screen,
+    get_winsize, print_error, print_message, print_warning,
 };
 use crate::termios::Winsize;
 
@@ -72,6 +75,8 @@ fn read_key() -> Option<Key> {
 
 #[cfg(not(tarpaulin_include))]
 pub fn run_editor() -> Result<(), usize> {
+    use crate::terminal::{cursor_down, cursor_left, cursor_right, cursor_up};
+
     enter_alternate_screen()?;
     clear_screen()?;
 
@@ -82,56 +87,111 @@ pub fn run_editor() -> Result<(), usize> {
     let mut running = true;
 
     // Track cursor position
-    let mut cursor_row = 0;
-    let mut cursor_col = 0;
+    let mut cursor_row: u16 = 0;
+    let mut cursor_col: u16 = 0;
 
-    // Draw the initial status bar
+    // Try to open file.txt
+    let file_path = b"file.txt\0";
+    let fd = if let Ok(fd) = open(file_path, O_RDONLY) {
+        fd
+    } else {
+        print_error(winsize, b"Error: Failed to open file.txt")?;
+        0
+    };
+
+    if fd > 0 {
+        // Only support file smaller than the screen size
+        let map_size = winsize.rows as usize * winsize.cols as usize;
+
+        // Map the file into memory
+        match mmap(0, map_size, PROT_READ, MAP_PRIVATE, fd, 0) {
+            Ok(addr) => {
+                let file_content = addr as *mut u8;
+
+                print_message(winsize, b"File loaded successfully")?;
+
+                if !file_content.is_null() {
+                    cursor_home()?;
+
+                    // Ensure we don't read beyond map_size
+                    let content = unsafe { core::slice::from_raw_parts(file_content, map_size) };
+
+                    // Print the file content till the \0
+                    for &byte in content {
+                        if byte == 0 {
+                            break;
+                        }
+
+                        putchar(byte)?;
+
+                        // Track cursor position
+                        cursor_col += 1;
+                        if byte == b'\n' || cursor_col >= winsize.cols {
+                            cursor_row += 1;
+                            cursor_col = 0;
+                            // Avoid printing past screen bottom
+                            if cursor_row >= winsize.rows - 1 {
+                                print_warning(
+                                    winsize,
+                                    b"Warning: File content truncated (too large)",
+                                )?;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            Err(_) => {
+                print_error(winsize, b"Error: Failed to memory map file")?;
+            }
+        }
+        close(fd)?;
+    }
     draw_status_bar(winsize, cursor_row, cursor_col)?;
-
     while running {
         if let Some(key) = read_key() {
             match key {
                 Key::Quit => running = false,
 
                 Key::Enter => {
-                    let _ = puts(b"\r\n");
+                    puts(b"\r\n")?;
                     cursor_row += 1;
                     cursor_col = 0;
                 }
 
                 Key::Backspace => {
                     if cursor_col > 0 {
-                        let _ = puts(b"\x08 \x08");
+                        puts(b"\x08 \x08")?;
                         cursor_col -= 1;
                     }
                 }
 
                 Key::ArrowUp => {
                     if cursor_row > 0 {
-                        let _ = puts(b"\x1b[A"); // Move cursor up
+                        cursor_up()?;
                         cursor_row -= 1;
                     }
                 }
 
                 Key::ArrowDown => {
-                    let _ = puts(b"\x1b[B"); // Move cursor down
+                    cursor_down()?;
                     cursor_row += 1;
                 }
 
                 Key::ArrowRight => {
-                    let _ = puts(b"\x1b[C"); // Move cursor right
+                    cursor_right()?;
                     cursor_col += 1;
                 }
 
                 Key::ArrowLeft => {
                     if cursor_col > 0 {
-                        let _ = puts(b"\x1b[D"); // Move cursor left
+                        cursor_left()?;
                         cursor_col -= 1;
                     }
                 }
 
                 Key::Char(ch) => {
-                    let _ = putchar(ch);
+                    putchar(ch)?;
                     cursor_col += 1;
                 }
             }

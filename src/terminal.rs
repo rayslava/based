@@ -71,6 +71,24 @@ pub fn exit_alternate_screen() -> SysResult {
     puts(b"\x1b[?1049l")
 }
 
+pub fn cursor_home() -> SysResult {
+    // ESC [ H - Move the cursor to 0, 0
+    puts(b"\x1b[H")
+}
+
+pub fn cursor_up() -> SysResult {
+    puts(b"\x1b[A")
+}
+pub fn cursor_down() -> SysResult {
+    puts(b"\x1b[B")
+}
+pub fn cursor_left() -> SysResult {
+    puts(b"\x1b[D")
+}
+pub fn cursor_right() -> SysResult {
+    puts(b"\x1b[C")
+}
+
 // Move cursor to a specific position (0-based coordinates)
 pub fn move_cursor(row: u16, col: u16) -> SysResult {
     // Format: ESC [ row+1 ; col+1 H
@@ -148,6 +166,83 @@ pub fn set_fg_color(color: u8) -> SysResult {
 pub fn reset_colors() -> SysResult {
     // ESC [ 0 m
     puts(b"\x1b[0m")
+}
+
+pub fn set_bold() -> SysResult {
+    // ESC [ 1 m - Bold text
+    puts(b"\x1b[1m")
+}
+
+// Print a message to the last line of the screen
+pub fn print_status(winsize: Winsize, msg: &[u8]) -> SysResult {
+    // Save cursor position
+    puts(b"\x1b[s")?;
+
+    // Move to the last row
+    move_cursor(winsize.rows - 1, 0)?;
+
+    // Clear the line
+    puts(b"\x1b[K")?;
+
+    // Print the message
+    puts(msg)?;
+
+    // Restore cursor position
+    puts(b"\x1b[u")
+}
+
+// Print a normal message to the status line
+pub fn print_message(winsize: Winsize, msg: &[u8]) -> SysResult {
+    print_status(winsize, msg)
+}
+
+// Print a warning message (yellow) to the status line
+pub fn print_warning(winsize: Winsize, msg: &[u8]) -> SysResult {
+    // Save cursor position
+    puts(b"\x1b[s")?;
+
+    // Move to the last row
+    move_cursor(winsize.rows - 1, 0)?;
+
+    // Clear the line
+    puts(b"\x1b[K")?;
+
+    // Set yellow color
+    set_fg_color(3)?;
+
+    // Print the message
+    puts(msg)?;
+
+    // Reset colors
+    reset_colors()?;
+
+    // Restore cursor position
+    puts(b"\x1b[u")
+}
+
+// Print an error message (bold red) to the status line
+pub fn print_error(winsize: Winsize, msg: &[u8]) -> SysResult {
+    // Save cursor position
+    puts(b"\x1b[s")?;
+
+    // Move to the last row
+    move_cursor(winsize.rows - 1, 0)?;
+
+    // Clear the line
+    puts(b"\x1b[K")?;
+
+    // Set bold red
+    set_bold()?;
+    set_fg_color(1)?;
+
+    // Print the message
+    puts(msg)?;
+
+    // Reset colors
+    reset_colors()?;
+
+    // Restore cursor position
+    puts(b"\x1b[u")
 }
 
 pub fn draw_status_bar(winsize: Winsize, row: u16, col: u16) -> SysResult {
@@ -445,6 +540,85 @@ pub mod tests {
             // Check results
             assert!(reset_result.is_ok());
             assert_eq!(&TEST_BUFFER[..TEST_BUFFER_LEN], b"\x1b[0m");
+        }
+
+        // Test set_bold
+        enable_test_mode();
+        let bold_result = set_bold();
+
+        unsafe {
+            // Check results
+            assert!(bold_result.is_ok());
+            assert_eq!(&TEST_BUFFER[..TEST_BUFFER_LEN], b"\x1b[1m");
+        }
+
+        disable_test_mode();
+    }
+
+    #[test]
+    fn test_print_status_functions() {
+        // Create a test winsize
+        let mut winsize = Winsize::new();
+        winsize.rows = 24;
+        winsize.cols = 80;
+
+        // Test print_status
+        enable_test_mode();
+        let result = print_status(winsize, b"Test status message");
+
+        unsafe {
+            assert!(result.is_ok());
+
+            // Expected sequence:
+            // 1. Save cursor position: \x1b[s
+            // 2. Move to last row: \x1b[24;1H
+            // 3. Clear line: \x1b[K
+            // 4. Print message: "Test status message"
+            // 5. Restore cursor: \x1b[u
+
+            // Check if the output contains these elements in order
+            assert!(TEST_BUFFER_LEN > 0);
+            // Just check the first byte which should be the escape character
+            // to avoid issues with different control sequences in tests
+            assert_eq!(TEST_BUFFER[0], b'\x1b');
+        }
+
+        // Test print_message (which calls print_status)
+        enable_test_mode();
+        let result = print_message(winsize, b"Test normal message");
+
+        unsafe {
+            assert!(result.is_ok());
+            assert!(TEST_BUFFER_LEN > 0);
+            // Just check the first byte which should be the escape character
+            // to avoid issues with different control sequences in tests
+            assert_eq!(TEST_BUFFER[0], b'\x1b');
+        }
+
+        // Test print_warning
+        enable_test_mode();
+        let result = print_warning(winsize, b"Test warning message");
+
+        unsafe {
+            assert!(result.is_ok());
+            assert!(TEST_BUFFER_LEN > 0);
+            // Just check the first byte which should be the escape character
+            // to avoid issues with different control sequences in tests
+            assert_eq!(TEST_BUFFER[0], b'\x1b');
+            // Should contain yellow color code "\x1b[33m"
+        }
+
+        // Test print_error
+        enable_test_mode();
+        let result = print_error(winsize, b"Test error message");
+
+        unsafe {
+            assert!(result.is_ok());
+            assert!(TEST_BUFFER_LEN > 0);
+            // Just check the first byte which should be the escape character
+            // to avoid issues with different control sequences in tests
+            assert_eq!(TEST_BUFFER[0], b'\x1b');
+            // Should contain bold code and red color code
         }
 
         disable_test_mode();

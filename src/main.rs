@@ -45,6 +45,8 @@ fn main() -> Result<(), usize> {
         puts(b"x")?;
         terminal::write_number(winsize.cols);
         puts(b"\r\n")?;
+
+        puts(b"Ready to open file.txt using mmap\r\n")?;
     } else {
         puts(b"Could not get terminal size\r\n")?;
     }
@@ -62,6 +64,7 @@ fn main() -> Result<(), usize> {
         // Apply raw mode
         if set_termios(syscall::STDIN, TCSETS, &raw_termios).is_ok() {
             puts(b"Entered raw mode. Press q to exit.\r\n")?;
+            puts(b"Opening file.txt with mmap and displaying its contents.\r\n")?;
 
             // Run the editor
             run_editor()?;
