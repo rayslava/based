@@ -18,9 +18,17 @@ and no libc is used either. Only Linux syscalls.
   appended to the end of the test module.
 - Always use `make fix` after introducing changes into source files.
 - Always use `make check` to verify that no issues happened in source code
-  after introducing changes into sources files.
+  after introducing changes into sources files. Always use `make fix` before
+  running `make check`.
 - Do not add allows for clippy in any case. Rework the code, refactor the
   functions, but do not turn off any clippy checks.
+- Do not use allocator, do not use any allocator-based features, do not add any
+  features that might use allocator. Rework code in such cases so the allocator
+  is not required.
+- Do not ever implement `memset` or `memcpy` or other functions from this list,
+  rework the code so they're not needed.
+- Under any circumstances do not use or import `std` and `core` crates. Do not
+  use types from there, do not write code using such types.
 
 # Build process
 

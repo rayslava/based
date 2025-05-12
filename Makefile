@@ -16,7 +16,7 @@ coverage:
 	cargo tarpaulin --all-targets --count --force-clean --all-features --workspace --out Xml --engine Llvm
 
 clean:
-	rm based
+	rm -f based
 	cargo clean
 
 check:

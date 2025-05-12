@@ -8,6 +8,12 @@ pub const CLOSE: usize = 3;
 pub const EXIT: usize = 60;
 pub const IOCTL: usize = 16;
 pub const MMAP: usize = 9;
+pub const LSEEK: usize = 8;
+
+// Constants for seek
+pub const SEEK_SET: usize = 0;
+pub const SEEK_CUR: usize = 1;
+pub const SEEK_END: usize = 2;
 
 // File descriptors
 pub const STDIN: usize = 0;
@@ -150,6 +156,16 @@ pub fn mmap(
     offset: usize,
 ) -> SysResult {
     let result = unsafe { syscall!(MMAP, addr, length, prot, flags, fd, offset) };
+    if is_error(result) {
+        Err(usize::MAX - result + 1) // Extract actual errno
+    } else {
+        Ok(result)
+    }
+}
+
+// Seek function
+pub fn lseek(fd: usize, offset: usize, whence: usize) -> SysResult {
+    let result = unsafe { syscall!(LSEEK, fd, offset, whence) };
     if is_error(result) {
         Err(usize::MAX - result + 1) // Extract actual errno
     } else {

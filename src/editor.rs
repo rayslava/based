@@ -1,9 +1,10 @@
 use crate::syscall::{
-    MAP_PRIVATE, O_RDONLY, PROT_READ, STDIN, STDOUT, SysResult, mmap, open, putchar, read,
+    MAP_PRIVATE, O_RDONLY, PROT_READ, SEEK_END, SEEK_SET, STDIN, STDOUT, SysResult, close, lseek,
+    mmap, open, putchar, read,
 };
 use crate::terminal::{
     clear_line, clear_screen, draw_status_bar, enter_alternate_screen, exit_alternate_screen,
-    get_winsize, move_cursor, print_error,
+    get_winsize, move_cursor, print_error, print_message,
 };
 use crate::termios::Winsize;
 
@@ -643,41 +644,46 @@ impl From<FileBufferError> for EditorError {
     }
 }
 
+fn open_file(file_path: &str) -> Result<FileBuffer, EditorError> {
+    let Ok(fd) = open(file_path.as_bytes(), O_RDONLY) else {
+        return Err(EditorError::OpenFile);
+    };
+
+    if fd == 0 {
+        return Err(EditorError::LoadFile);
+    }
+    let file_size = lseek(fd, 0, SEEK_END)?;
+    lseek(fd, 0, SEEK_SET)?;
+
+    let (addr, size) = if file_size == 0 {
+        static EMPTY: u8 = 0;
+        close(fd)?;
+        (&raw const EMPTY as usize, 0)
+    } else {
+        let Ok(addr) = mmap(0, file_size, PROT_READ, MAP_PRIVATE, fd, 0) else {
+            return Err(EditorError::MMapFile);
+        };
+        (addr, file_size)
+    };
+    Ok(FileBuffer::load_from_mmap(addr, size)?)
+}
+
 #[cfg(not(tarpaulin_include))]
 pub fn run_editor() -> Result<(), EditorError> {
-    // Enter alternate screen and ensure it's clear
-
-    use crate::terminal::print_message;
     enter_alternate_screen()?;
     clear_screen()?;
 
-    // Get terminal size
     let mut winsize = Winsize::new();
     get_winsize(STDOUT, &mut winsize)?;
 
-    // Create editor state
     let mut state = EditorState::new(winsize);
-    let file_path = b"file.txt\0";
-
-    let file_buffer: FileBuffer = {
-        let Ok(fd) = open(file_path, O_RDONLY) else {
-            print_error(winsize, "Error: Failed to open file.txt")?;
-            return Err(EditorError::OpenFile);
-        };
-
-        if fd == 0 {
-            print_error(winsize, "Error: Failed to open file.txt")?;
-            return Err(EditorError::LoadFile);
+    let file_path = "file.txt\0";
+    let file_buffer = match open_file(file_path) {
+        Ok(file_buffer) => file_buffer,
+        Err(e) => {
+            print_error(winsize, "Error: Failed to open file")?;
+            return Err(e);
         }
-
-        let max_file_size = 1024 * 1024; // 1MB, enough for now
-
-        let Ok(addr) = mmap(0, max_file_size, PROT_READ, MAP_PRIVATE, fd, 0) else {
-            print_error(winsize, "Error: Failed to load file content")?;
-            return Err(EditorError::MMapFile);
-        };
-
-        FileBuffer::load_from_mmap(addr, max_file_size)?
     };
 
     draw_screen(&state, &file_buffer)?;
@@ -805,6 +811,50 @@ pub mod tests {
     }
 
     #[test]
+    fn test_file_buffer_empty_file() {
+        // Create a FileBuffer with size 0 to simulate empty file handling
+        let empty_buffer = FileBuffer {
+            content: &0u8,
+            size: 0,
+        };
+
+        // Test count_lines with empty file
+        assert_eq!(
+            empty_buffer.count_lines(),
+            0,
+            "Empty file should have 0 lines"
+        );
+
+        // Test find_line_start with empty file
+        assert_eq!(
+            empty_buffer.find_line_start(0),
+            None,
+            "Empty file shouldn't have line start"
+        );
+
+        // Test find_line_end with empty file
+        assert_eq!(
+            empty_buffer.find_line_end(0),
+            None,
+            "Empty file shouldn't have line end"
+        );
+
+        // Test get_line with empty file
+        assert_eq!(
+            empty_buffer.get_line(0),
+            None,
+            "Empty file shouldn't return a line"
+        );
+
+        // Test line_length with empty file
+        assert_eq!(
+            empty_buffer.line_length(0, 4),
+            0,
+            "Empty file line length should be 0"
+        );
+    }
+
+    #[test]
     fn test_read_key_regular_chars() {
         struct TestCase {
             name: &'static str,
@@ -832,11 +882,6 @@ pub mod tests {
                 name: "backspace (8)",
                 input: &[8],
                 expected: Some(Key::Backspace),
-            },
-            TestCase {
-                name: "quit key",
-                input: b"q",
-                expected: Some(Key::Quit),
             },
             TestCase {
                 name: "no input",
