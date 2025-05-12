@@ -21,7 +21,8 @@ and no libc is used either. Only Linux syscalls.
   after introducing changes into sources files. Always use `make fix` before
   running `make check`.
 - Do not add allows for clippy in any case. Rework the code, refactor the
-  functions, but do not turn off any clippy checks.
+  functions, but do not turn off any clippy checks. Do not ever add any
+  `#allow` directive to the code, this is forbidden under any circumstances.
 - Do not use allocator, do not use any allocator-based features, do not add any
   features that might use allocator. Rework code in such cases so the allocator
   is not required.

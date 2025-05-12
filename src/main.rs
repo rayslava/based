@@ -1,7 +1,7 @@
 #![deny(warnings)]
 #![cfg_attr(test, allow(unused_imports))]
-#![cfg_attr(not(test), no_std)]
-#![cfg_attr(not(test), no_main)]
+#![cfg_attr(all(not(test), not(debug_assertions)), no_std)]
+#![cfg_attr(all(not(test), not(debug_assertions)), no_main)]
 #[macro_use]
 extern crate sc;
 
@@ -15,7 +15,7 @@ use syscall::{exit, puts};
 use terminal::{get_termios, get_winsize, set_raw_mode, set_termios, write_number};
 use termios::{TCSETS, TCSETSW, Termios, Winsize};
 
-#[cfg(not(test))]
+#[cfg(all(not(test), not(debug_assertions)))]
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     unsafe { core::hint::unreachable_unchecked() }
@@ -24,19 +24,27 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 /// # Safety
 ///
 /// No one is safe once this program is started.
-#[cfg(not(test))]
+#[cfg(all(not(test), not(debug_assertions)))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _start() {
     // Need to align stack to make sse work
     unsafe { core::arch::asm!("and rsp, -64", options(nomem, nostack)) };
 
-    match main() {
+    match run() {
         Ok(()) => exit(0),
         Err(e) => exit(e),
     }
 }
 
-fn main() -> Result<(), usize> {
+#[cfg(debug_assertions)]
+fn main() {
+    match run() {
+        Ok(()) => {}
+        Err(_) => exit(1),
+    }
+}
+
+fn run() -> Result<(), usize> {
     let mut winsize = Winsize::new();
 
     if get_winsize(syscall::STDOUT, &mut winsize).is_ok() {
