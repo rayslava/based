@@ -456,6 +456,123 @@ enum Key {
     End,
     PageUp,
     PageDown,
+    Combination([u8; 2]),
+}
+
+// Process an escape sequence and return the corresponding key
+fn process_escape_sequence() -> Key {
+    // Read the second character of the escape sequence
+    let Some(second_ch) = read_char() else {
+        return Key::Char(27);
+    };
+
+    match second_ch {
+        // Alt+v for PageUp (Emacs-style)
+        b'v' => Key::PageUp,
+
+        // Standard escape sequences starting with ESC [
+        b'[' => {
+            // Read the third character of the sequence
+            let Some(third_ch) = read_char() else {
+                return Key::Char(second_ch);
+            };
+
+            match third_ch {
+                // Arrow keys
+                b'A' => Key::ArrowUp,
+                b'B' => Key::ArrowDown,
+                b'C' => Key::ArrowRight,
+                b'D' => Key::ArrowLeft,
+                b'H' => Key::Home, // Home key
+                b'F' => Key::End,  // End key
+
+                // Page Up: ESC [ 5 ~
+                b'5' => {
+                    let Some(fourth_ch) = read_char() else {
+                        return Key::Char(third_ch);
+                    };
+
+                    if fourth_ch == b'~' {
+                        return Key::PageUp;
+                    }
+                    Key::Char(fourth_ch)
+                }
+
+                // Page Down: ESC [ 6 ~
+                b'6' => {
+                    let Some(fourth_ch) = read_char() else {
+                        return Key::Char(third_ch);
+                    };
+
+                    if fourth_ch == b'~' {
+                        return Key::PageDown;
+                    }
+                    Key::Char(fourth_ch)
+                }
+
+                // Home key: ESC [ 1 ~
+                b'1' => {
+                    let Some(fourth_ch) = read_char() else {
+                        return Key::Char(third_ch);
+                    };
+
+                    if fourth_ch == b'~' {
+                        return Key::Home; // Home key on some terminals
+                    } else if fourth_ch == b';' {
+                        // Extended keys: ESC [ 1 ; X Y where X is modifier and Y is key
+                        // Skip modifier key
+                        let _ = read_char();
+
+                        // Read the key code
+                        if let Some(code) = read_char() {
+                            match code {
+                                b'A' => return Key::ArrowUp,
+                                b'B' => return Key::ArrowDown,
+                                b'C' => return Key::ArrowRight,
+                                b'D' => return Key::ArrowLeft,
+                                _ => return Key::Char(code),
+                            }
+                        }
+                    }
+                    Key::Char(fourth_ch)
+                }
+
+                // End key: ESC [ 4 ~
+                b'4' => {
+                    let Some(fourth_ch) = read_char() else {
+                        return Key::Char(third_ch);
+                    };
+
+                    if fourth_ch == b'~' {
+                        return Key::End; // End key on some terminals
+                    }
+                    Key::Char(fourth_ch)
+                }
+
+                _ => Key::Char(third_ch),
+            }
+        }
+
+        // Alternative format for xterm/rxvt keys: ESC O X
+        b'O' => {
+            let Some(third_ch) = read_char() else {
+                return Key::Char(second_ch);
+            };
+
+            match third_ch {
+                b'A' => Key::ArrowUp,    // Up arrow
+                b'B' => Key::ArrowDown,  // Down arrow
+                b'C' => Key::ArrowRight, // Right arrow
+                b'D' => Key::ArrowLeft,  // Left arrow
+                b'H' => Key::Home,       // Home
+                b'F' => Key::End,        // End
+                _ => Key::Char(third_ch),
+            }
+        }
+
+        // Could not recognize the escape sequence
+        _ => Key::Char(second_ch),
+    }
 }
 
 // Read a key, handling escape sequences and control characters
@@ -465,9 +582,6 @@ fn read_key() -> Option<Key> {
 
     // Handle regular keys
     match ch {
-        // Quit key
-        b'q' => Some(Key::Quit),
-
         // Enter key
         b'\r' => Some(Key::Enter),
 
@@ -484,122 +598,25 @@ fn read_key() -> Option<Key> {
         16 => Some(Key::ArrowUp),   // C-p (previous-line)
         22 => Some(Key::PageDown),  // C-v (page-down)
 
-        // Escape sequence
-        27 => {
-            // Read the second character of the escape sequence
-            let Some(second_ch) = read_char() else {
-                return Some(Key::Char(27));
-            };
-
-            match second_ch {
-                // Alt+v for PageUp (Emacs-style)
-                b'v' => Some(Key::PageUp),
-
-                // Standard escape sequences starting with ESC [
-                b'[' => {
-                    // Read the third character of the sequence
-
-                    let Some(third_ch) = read_char() else {
-                        return Some(Key::Char(second_ch));
-                    };
-
-                    match third_ch {
-                        // Arrow keys
-                        b'A' => Some(Key::ArrowUp),
-                        b'B' => Some(Key::ArrowDown),
-                        b'C' => Some(Key::ArrowRight),
-                        b'D' => Some(Key::ArrowLeft),
-                        b'H' => Some(Key::Home), // Home key
-                        b'F' => Some(Key::End),  // End key
-
-                        // Page Up: ESC [ 5 ~
-                        b'5' => {
-                            let Some(fourth_ch) = read_char() else {
-                                return Some(Key::Char(third_ch));
-                            };
-
-                            if fourth_ch == b'~' {
-                                return Some(Key::PageUp);
-                            }
-                            Some(Key::Char(fourth_ch))
-                        }
-
-                        // Page Down: ESC [ 6 ~
-                        b'6' => {
-                            let Some(fourth_ch) = read_char() else {
-                                return Some(Key::Char(third_ch));
-                            };
-
-                            if fourth_ch == b'~' {
-                                return Some(Key::PageDown);
-                            }
-                            Some(Key::Char(fourth_ch))
-                        }
-
-                        // Home key: ESC [ 1 ~
-                        b'1' => {
-                            let Some(fourth_ch) = read_char() else {
-                                return Some(Key::Char(third_ch));
-                            };
-
-                            if fourth_ch == b'~' {
-                                return Some(Key::Home); // Home key on some terminals
-                            } else if fourth_ch == b';' {
-                                // Extended keys: ESC [ 1 ; X Y where X is modifier and Y is key
-                                // Skip modifier key
-                                let _ = read_char();
-
-                                // Read the key code
-                                if let Some(code) = read_char() {
-                                    match code {
-                                        b'A' => return Some(Key::ArrowUp),
-                                        b'B' => return Some(Key::ArrowDown),
-                                        b'C' => return Some(Key::ArrowRight),
-                                        b'D' => return Some(Key::ArrowLeft),
-                                        _ => return Some(Key::Char(code)),
-                                    }
-                                }
-                            }
-                            Some(Key::Char(fourth_ch))
-                        }
-
-                        // End key: ESC [ 4 ~
-                        b'4' => {
-                            let Some(fourth_ch) = read_char() else {
-                                return Some(Key::Char(third_ch));
-                            };
-
-                            if fourth_ch == b'~' {
-                                return Some(Key::End); // End key on some terminals
-                            }
-                            Some(Key::Char(fourth_ch))
-                        }
-
-                        _ => Some(Key::Char(third_ch)),
-                    }
+        // Ctrl+X prefix for key combinations
+        24 => {
+            // Ctrl+X
+            // Wait for the next key
+            if let Some(next_ch) = read_char() {
+                // Ctrl+X Ctrl+C (Quit)
+                if next_ch == 3 {
+                    // Ctrl+C
+                    return Some(Key::Quit);
                 }
 
-                // Alternative format for xterm/rxvt keys: ESC O X
-                b'O' => {
-                    let Some(third_ch) = read_char() else {
-                        return Some(Key::Char(second_ch));
-                    };
-
-                    match third_ch {
-                        b'A' => Some(Key::ArrowUp),    // Up arrow
-                        b'B' => Some(Key::ArrowDown),  // Down arrow
-                        b'C' => Some(Key::ArrowRight), // Right arrow
-                        b'D' => Some(Key::ArrowLeft),  // Left arrow
-                        b'H' => Some(Key::Home),       // Home
-                        b'F' => Some(Key::End),        // End
-                        _ => Some(Key::Char(third_ch)),
-                    }
-                }
-
-                // Could not recognize the escape sequence
-                _ => Some(Key::Char(second_ch)),
+                // Return the combination
+                return Some(Key::Combination([ch, next_ch]));
             }
+            Some(Key::Char(ch))
         }
+
+        // Escape sequence
+        27 => Some(process_escape_sequence()),
 
         // Regular character
         _ => Some(Key::Char(ch)),
@@ -745,7 +762,7 @@ pub fn run_editor() -> Result<(), EditorError> {
                     draw_screen(&state, &file_buffer)?;
                 }
 
-                Key::Char(_) => {
+                Key::Char(_) | Key::Combination(_) => {
                     // In a full editor, this would insert characters
                     // For now, we're just viewing the file, so we ignore character input
                 }
@@ -912,6 +929,32 @@ pub mod tests {
                 name: "Ctrl+P (up)",
                 input: &[16],
                 expected: Some(Key::ArrowUp),
+            },
+        ];
+
+        for tc in test_cases {
+            run_key_test(tc.name, tc.input, tc.expected.as_ref());
+        }
+    }
+
+    #[test]
+    fn test_read_key_combinations() {
+        struct TestCase {
+            name: &'static str,
+            input: &'static [u8],
+            expected: Option<Key>,
+        }
+
+        let test_cases = [
+            TestCase {
+                name: "Ctrl+X Ctrl+C (quit)",
+                input: &[24, 3], // Ctrl+X followed by Ctrl+C
+                expected: Some(Key::Quit),
+            },
+            TestCase {
+                name: "Ctrl+X followed by another key",
+                input: &[24, b'a'],
+                expected: Some(Key::Combination([24, b'a'])),
             },
         ];
 
