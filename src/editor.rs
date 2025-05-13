@@ -53,44 +53,33 @@ impl FileBuffer {
         count
     }
 
-    // Find the start position of a specific line
     fn find_line_start(&self, line_idx: usize) -> Option<usize> {
         if self.content.is_null() || self.size == 0 {
             return None;
         }
 
         if line_idx == 0 {
-            return Some(0); // First line always starts at 0
+            return Some(0);
         }
 
-        let mut current_line = 0;
+        let mut newlines_found = 0;
         let mut pos = 0;
 
         while pos < self.size {
             let byte = unsafe { *self.content.add(pos) };
-
-            if byte == 0 {
-                // End of file marker
-                break;
-            }
-
             if byte == b'\n' {
-                current_line += 1;
-                if current_line == line_idx {
-                    return Some(pos + 1); // Start of the next line is after the newline
+                newlines_found += 1;
+                if newlines_found == line_idx {
+                    return Some(pos + 1); // Start of next line
                 }
             }
-
             pos += 1;
         }
-
-        // If line_idx is beyond the number of lines in the file
         None
     }
 
     // Find the end position of a specific line (exclusive of newline)
     fn find_line_end(&self, line_idx: usize) -> Option<usize> {
-        // Get the start of this line
         let start = self.find_line_start(line_idx)?;
 
         let mut pos = start;
@@ -104,8 +93,6 @@ impl FileBuffer {
 
             pos += 1;
         }
-
-        // End of file
         Some(self.size)
     }
 
