@@ -1131,21 +1131,14 @@ fn handle_open_file(state: &mut EditorState) -> Result<FileBuffer, EditorError> 
 }
 
 // Handle saving the file
-fn handle_save_file(
-    state: &mut EditorState,
-    file_buffer: &mut FileBuffer,
-    file_path: &[u8],
-) -> SysResult {
-    save_cursor()?;
-
-    if file_buffer.save_to_file(file_path).is_ok() {
-        print_message(state.winsize, "File saved successfully")?;
-    } else {
-        print_error(state.winsize, "Error saving file")?;
+fn handle_save_file(state: &mut EditorState, file_buffer: &mut FileBuffer) -> SysResult {
+    match file_buffer.save_to_file(&state.filename) {
+        Ok(_) => Ok(print_message(state.winsize, "File saved successfully")?),
+        Err(e) => {
+            print_error(state.winsize, "Error saving file")?;
+            Err(e)
+        }
     }
-
-    restore_cursor()?;
-    Ok(0)
 }
 
 // Implement Drop for FileBuffer
@@ -1195,7 +1188,7 @@ pub fn run_editor() -> Result<(), EditorError> {
                     }
                 }
                 Key::SaveFile => {
-                    handle_save_file(&mut state, &mut file_buffer, file_path)?;
+                    handle_save_file(&mut state, &mut file_buffer)?;
                 }
                 Key::ArrowUp
                 | Key::ArrowDown
