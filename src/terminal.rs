@@ -109,7 +109,7 @@ pub fn move_cursor(row: usize, col: usize) -> SysResult {
 }
 
 // Helper to write a usize number to buffer, returns bytes written
-fn write_usize_to_buf(buf: &mut [u8], n: usize) -> usize {
+pub fn write_usize_to_buf(buf: &mut [u8], n: usize) -> usize {
     if n == 0 {
         buf[0] = b'0';
         return 1;
@@ -239,64 +239,6 @@ pub fn print_error(winsize: Winsize, msg: &str) -> SysResult {
 
     // Print the message
     puts(msg)?;
-
-    // Reset colors
-    reset_colors()?;
-
-    // Restore cursor position
-    restore_cursor()
-}
-
-pub fn draw_status_bar(winsize: Winsize, row: usize, col: usize) -> SysResult {
-    // Make sure we have at least 3 rows (1 for status bar, 1 for message line, and 1+ for editing)
-    if winsize.rows < 3 {
-        return Ok(0);
-    }
-
-    // Save cursor position
-    save_cursor()?;
-
-    // Move to status bar line (second to last row)
-    move_cursor(winsize.rows as usize - 2, 0)?;
-
-    // Set colors for status bar (white text on blue background)
-    set_bg_color(7)?;
-    set_fg_color(0)?;
-
-    // Initial status message - this has the cursor position
-    let mut initial_msg = [0u8; 64];
-    let mut pos = 0;
-
-    // Add cursor position text
-    let text = b" ROW: ";
-    for &b in text {
-        initial_msg[pos] = b;
-        pos += 1;
-    }
-
-    // Add row number
-    pos += write_usize_to_buf(&mut initial_msg[pos..], row);
-
-    // Add column text
-    let text = b", COL: ";
-    for &b in text {
-        initial_msg[pos] = b;
-        pos += 1;
-    }
-
-    // Add column number
-    pos += write_usize_to_buf(&mut initial_msg[pos..], col);
-
-    // Add trailing space
-    initial_msg[pos] = b' ';
-    pos += 1;
-
-    // Write the initial status message
-    write_buf(&initial_msg[0..pos])?;
-
-    // Clear to the end of line (makes sure status bar fills whole width)
-    // ESC [ K - Clear from cursor to end of line
-    clear_line()?;
 
     // Reset colors
     reset_colors()?;

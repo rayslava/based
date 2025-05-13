@@ -3,8 +3,9 @@ use crate::syscall::{
     mmap, open, putchar, read, write_unchecked,
 };
 use crate::terminal::{
-    clear_line, clear_screen, draw_status_bar, enter_alternate_screen, exit_alternate_screen,
-    get_winsize, move_cursor, print_error, print_message,
+    clear_line, clear_screen, enter_alternate_screen, exit_alternate_screen, get_winsize,
+    move_cursor, print_error, print_message, reset_colors, set_bg_color, set_fg_color,
+    write_usize_to_buf,
 };
 use crate::{
     syscall::write_buf,
@@ -356,20 +357,86 @@ impl FileBuffer {
 
 // Editor state structure to track view and cursor position
 struct EditorState {
-    winsize: Winsize,  // Terminal window size
-    cursor_row: usize, // Cursor row in the visible window
-    cursor_col: usize, // Cursor column in the visible window
-    file_row: usize,   // Row in the file (0-based)
-    file_col: usize,   // Column in the file (0-based)
-    scroll_row: usize, // Top row of the file being displayed
-    scroll_col: usize, // Leftmost column being displayed
-    tab_size: usize,   // Number of spaces per tab
+    winsize: Winsize,   // Terminal window size
+    cursor_row: usize,  // Cursor row in the visible window
+    cursor_col: usize,  // Cursor column in the visible window
+    file_row: usize,    // Row in the file (0-based)
+    file_col: usize,    // Column in the file (0-based)
+    scroll_row: usize,  // Top row of the file being displayed
+    scroll_col: usize,  // Leftmost column being displayed
+    tab_size: usize,    // Number of spaces per tab
+    filename: [u8; 64], // Current file name
+}
+
+fn draw_status_bar(state: &EditorState) -> SysResult {
+    // Make sure we have at least 3 rows (1 for status bar, 1 for message line, and 1+ for editing)
+    let winsize = state.winsize;
+
+    if winsize.rows < 3 {
+        return Ok(0);
+    }
+
+    // Save cursor position
+    save_cursor()?;
+
+    // Move to status bar line (second to last row)
+    move_cursor(winsize.rows as usize - 2, 0)?;
+
+    // Set colors for status bar (white text on blue background)
+    set_bg_color(7)?;
+    set_fg_color(0)?;
+
+    // Initial status message - this has the cursor position
+    let mut initial_msg = [0u8; 64];
+    let mut pos = 0;
+
+    // Add cursor position text
+    let text = b" ROW: ";
+    for &b in text {
+        initial_msg[pos] = b;
+        pos += 1;
+    }
+
+    // Add row number
+    pos += write_usize_to_buf(&mut initial_msg[pos..], state.file_row);
+
+    // Add column text
+    let text = b", COL: ";
+    for &b in text {
+        initial_msg[pos] = b;
+        pos += 1;
+    }
+
+    // Add column number
+    pos += write_usize_to_buf(&mut initial_msg[pos..], state.file_col);
+
+    // Add trailing space
+    initial_msg[pos] = b' ';
+    pos += 1;
+
+    // Write the initial status message
+    write_buf(&initial_msg[0..pos])?;
+
+    write_buf(&state.filename)?;
+
+    // Clear to the end of line (makes sure status bar fills whole width)
+    // ESC [ K - Clear from cursor to end of line
+    clear_line()?;
+
+    // Reset colors
+    reset_colors()?;
+
+    // Restore cursor position
+    restore_cursor()
 }
 
 impl EditorState {
     // Create a new editor state
-    fn new(winsize: Winsize) -> Self {
-        EditorState {
+    fn new(winsize: Winsize, filename: &[u8; 64]) -> Self {
+        let mut own_filename = [0u8; 64];
+        own_filename[..filename.len()].copy_from_slice(filename);
+
+        Self {
             winsize,
             cursor_row: 0,
             cursor_col: 0,
@@ -378,6 +445,7 @@ impl EditorState {
             scroll_row: 0,
             scroll_col: 0,
             tab_size: 4,
+            filename: own_filename,
         }
     }
 
@@ -1013,7 +1081,7 @@ fn handle_open_file(state: &mut EditorState) -> Result<FileBuffer, EditorError> 
     print_message(state.winsize, prompt)?;
     move_cursor(state.winsize.rows as usize - 1, prompt.len())?;
 
-    let mut filename: [u8; 64] = [0; 64];
+    let mut filename = [0u8; 64];
     let mut len: usize = 0;
     loop {
         if let Some(key) = read_key() {
@@ -1052,6 +1120,7 @@ fn handle_open_file(state: &mut EditorState) -> Result<FileBuffer, EditorError> 
             draw_screen(state, &new_buffer)?;
             print_message(state.winsize, "File opened successfully")?;
             move_cursor(0, 0)?;
+            state.filename[..filename.len()].copy_from_slice(&filename);
             Ok(new_buffer)
         }
         Err(e) => {
@@ -1093,9 +1162,12 @@ pub fn run_editor() -> Result<(), EditorError> {
     let mut winsize = Winsize::new();
     get_winsize(STDOUT, &mut winsize)?;
 
-    let mut state = EditorState::new(winsize);
-    // Use a static const for the filename to avoid any potential memory issues
     let file_path = b"file.txt\0";
+    // Create a new array filled with zeros
+    let mut filename = [0u8; 64];
+    filename[..file_path.len()].copy_from_slice(file_path);
+    let mut state = EditorState::new(winsize, &filename);
+    // Use a static const for the filename to avoid any potential memory issues
     let mut file_buffer = match open_file(file_path) {
         Ok(file_buffer) => file_buffer,
         Err(e) => {
@@ -1105,7 +1177,7 @@ pub fn run_editor() -> Result<(), EditorError> {
     };
 
     draw_screen(&state, &file_buffer)?;
-    draw_status_bar(state.winsize, state.cursor_row, state.cursor_col)?;
+    draw_status_bar(&state)?;
     print_message(winsize, "File opened successfully")?;
 
     let mut running = true;
@@ -1150,7 +1222,7 @@ pub fn run_editor() -> Result<(), EditorError> {
         } else {
             "Saved"
         };
-        draw_status_bar(state.winsize, state.file_row, state.file_col)?;
+        draw_status_bar(&state)?;
 
         // Display file status in bottom line
         move_cursor(state.winsize.rows as usize - 1, 0)?;
@@ -1270,7 +1342,7 @@ pub mod tests {
         let mut winsize = Winsize::new();
         winsize.rows = 24;
         winsize.cols = 80;
-        let _state = EditorState::new(winsize); // Prefixed with _ to avoid unused variable warning
+        let _state = EditorState::new(winsize, &[0; 64]); // Prefixed with _ to avoid unused variable warning
 
         // For this test, we need to ensure handle_open_file's read_key calls
         // would receive the expected input. In a real implementation, we would
@@ -1753,7 +1825,7 @@ pub mod tests {
         winsize.cols = 80;
 
         // Create a new editor state
-        let state = EditorState::new(winsize);
+        let state = EditorState::new(winsize, &[0; 64]);
 
         // Verify initial state
         assert_eq!(state.winsize.rows, 24, "Winsize rows should match");
@@ -1773,7 +1845,7 @@ pub mod tests {
         let mut winsize = Winsize::new();
         winsize.rows = 24; // Normal sized terminal
         winsize.cols = 80;
-        let state = EditorState::new(winsize);
+        let state = EditorState::new(winsize, &[0; 64]);
 
         // Should have rows - 2 available for editing (2 rows for status and message)
         assert_eq!(
@@ -1786,7 +1858,7 @@ pub mod tests {
         let mut small_winsize = Winsize::new();
         small_winsize.rows = 1; // Too small for status bars
         small_winsize.cols = 80;
-        let small_state = EditorState::new(small_winsize);
+        let small_state = EditorState::new(small_winsize, &[0; 64]);
 
         // Should use all available rows since it's too small for status bars
         assert_eq!(
@@ -1799,7 +1871,7 @@ pub mod tests {
         let mut zero_winsize = Winsize::new();
         zero_winsize.rows = 0;
         zero_winsize.cols = 80;
-        let zero_state = EditorState::new(zero_winsize);
+        let zero_state = EditorState::new(zero_winsize, &[0; 64]);
 
         // Should handle zero rows gracefully
         assert_eq!(
@@ -1815,7 +1887,7 @@ pub mod tests {
         let mut winsize = Winsize::new();
         winsize.rows = 10; // Small window for easier testing
         winsize.cols = 20;
-        let mut state = EditorState::new(winsize);
+        let mut state = EditorState::new(winsize, &[0; 64]);
 
         // Test case 1: Cursor is within visible area - nothing should change
         state.file_row = 5;
@@ -1928,7 +2000,7 @@ pub mod tests {
         let mut winsize = Winsize::new();
         winsize.rows = 10;
         winsize.cols = 20;
-        let mut state = EditorState::new(winsize);
+        let mut state = EditorState::new(winsize, &[0; 64]);
 
         // Test cursor_up when already at top row - should do nothing
         state.file_row = 0;
@@ -2033,7 +2105,7 @@ pub mod tests {
         let mut winsize = Winsize::new();
         winsize.rows = 10; // 8 editing rows after subtracting status bars
         winsize.cols = 20;
-        let mut state = EditorState::new(winsize);
+        let mut state = EditorState::new(winsize, &[0; 64]);
 
         // Test page_up from top (should stay at top)
         state.file_row = 0;
@@ -2117,7 +2189,7 @@ pub mod tests {
         let mut winsize = Winsize::new();
         winsize.rows = 10;
         winsize.cols = 20;
-        let mut state = EditorState::new(winsize);
+        let mut state = EditorState::new(winsize, &[0; 64]);
 
         // Position cursor at end of long line
         state.file_row = 2; // "Very very long line for testing"
@@ -2176,7 +2248,7 @@ pub mod tests {
         let mut winsize = Winsize::new();
         winsize.rows = 5; // Small window to test scrolling
         winsize.cols = 15;
-        let mut state = EditorState::new(winsize);
+        let mut state = EditorState::new(winsize, &[0; 64]);
 
         // Test a sequence of operations that would typically be performed
 
