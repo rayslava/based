@@ -165,39 +165,42 @@ impl EditorState {
 
     // Get the number of rows available for editing (excluding status bars)
     fn editing_rows(&self) -> usize {
-        if self.winsize.rows >= 2 {
-            // Use all rows except status bar and message line (2 rows)
-            self.winsize.rows as usize - 2
-        } else {
-            self.winsize.rows as usize
-        }
+        (self.winsize.rows as usize).saturating_sub(2)
     }
 
-    // Adjust scrolling to make sure cursor is visible
     fn scroll_to_cursor(&mut self) {
-        // If cursor is above the visible area, scroll up
-        if self.file_row < self.scroll_row {
-            self.scroll_row = self.file_row;
-        }
+        // Handle vertical scrolling
+        self.scroll_row = match self.file_row {
+            // If cursor is above visible area, scroll up
+            row if row < self.scroll_row => row,
 
-        // If cursor is below the visible area, scroll down
-        let max_visible_row = self.scroll_row + self.editing_rows();
-        if self.file_row >= max_visible_row {
-            self.scroll_row = self.file_row - self.editing_rows() + 1;
-        }
+            // If cursor is below visible area, scroll down
+            row if row >= self.scroll_row + self.editing_rows() => {
+                row.saturating_sub(self.editing_rows()).saturating_add(1)
+            }
 
-        // If cursor is left of visible area, scroll left
-        if self.file_col < self.scroll_col {
-            self.scroll_col = self.file_col;
-        }
+            // Otherwise keep current scroll position
+            _ => self.scroll_row,
+        };
 
-        // If cursor is right of visible area, scroll right
-        if self.file_col >= self.scroll_col + self.winsize.cols as usize {
-            self.scroll_col = self.file_col - self.winsize.cols as usize + 1;
-        }
+        // Handle horizontal scrolling
+        let visible_cols = self.winsize.cols as usize;
+        self.scroll_col = match self.file_col {
+            // If cursor is left of visible area, scroll left
+            col if col < self.scroll_col => col,
 
-        self.cursor_row = self.file_row - self.scroll_row;
-        self.cursor_col = self.file_col - self.scroll_col;
+            // If cursor is right of visible area, scroll right
+            col if col >= self.scroll_col + visible_cols => {
+                col.saturating_sub(visible_cols).saturating_add(1)
+            }
+
+            // Otherwise keep current scroll position
+            _ => self.scroll_col,
+        };
+
+        // Update cursor position relative to scroll position
+        self.cursor_row = self.file_row.saturating_sub(self.scroll_row);
+        self.cursor_col = self.file_col.saturating_sub(self.scroll_col);
     }
 
     // Move cursor up
@@ -210,8 +213,6 @@ impl EditorState {
             if self.file_col > current_line_len {
                 self.file_col = current_line_len;
             }
-
-            // Note: scroll_to_cursor is now called by the key handler
         }
     }
 
@@ -273,23 +274,13 @@ impl EditorState {
     }
 
     // Page up (Alt+V): move cursor up by a screen's worth of lines
+
     fn page_up(&mut self, file_buffer: &FileBuffer) {
         // Get the number of lines to scroll (screen height)
         let lines_to_scroll = self.editing_rows();
 
-        // First update scroll position
-        if self.scroll_row >= lines_to_scroll {
-            self.scroll_row -= lines_to_scroll;
-        } else {
-            self.scroll_row = 0;
-        }
-
-        // Then update cursor position
-        if self.file_row >= lines_to_scroll {
-            self.file_row -= lines_to_scroll;
-        } else {
-            self.file_row = 0;
-        }
+        self.scroll_row = self.scroll_row.saturating_sub(lines_to_scroll);
+        self.file_row = self.file_row.saturating_sub(lines_to_scroll);
 
         // Make sure cursor doesn't go beyond the end of the current line
         let current_line_len = file_buffer.line_length(self.file_row, self.tab_size);
@@ -1319,5 +1310,501 @@ pub mod tests {
             let line = buffer.get_line(i);
             assert!(line.is_some(), "Should get line when iterating in reverse");
         }
+    }
+
+    // Tests for EditorState struct and its methods
+    #[test]
+    fn test_editor_state_new() {
+        // Create a test winsize
+        let mut winsize = Winsize::new();
+        winsize.rows = 24;
+        winsize.cols = 80;
+
+        // Create a new editor state
+        let state = EditorState::new(winsize);
+
+        // Verify initial state
+        assert_eq!(state.winsize.rows, 24, "Winsize rows should match");
+        assert_eq!(state.winsize.cols, 80, "Winsize cols should match");
+        assert_eq!(state.cursor_row, 0, "Initial cursor_row should be 0");
+        assert_eq!(state.cursor_col, 0, "Initial cursor_col should be 0");
+        assert_eq!(state.file_row, 0, "Initial file_row should be 0");
+        assert_eq!(state.file_col, 0, "Initial file_col should be 0");
+        assert_eq!(state.scroll_row, 0, "Initial scroll_row should be 0");
+        assert_eq!(state.scroll_col, 0, "Initial scroll_col should be 0");
+        assert_eq!(state.tab_size, 4, "Initial tab_size should be 4");
+    }
+
+    #[test]
+    fn test_editor_state_editing_rows() {
+        // Test with normal size terminal (rows >= 2)
+        let mut winsize = Winsize::new();
+        winsize.rows = 24; // Normal sized terminal
+        winsize.cols = 80;
+        let state = EditorState::new(winsize);
+
+        // Should have rows - 2 available for editing (2 rows for status and message)
+        assert_eq!(
+            state.editing_rows(),
+            22,
+            "Should have 22 rows available for editing"
+        );
+
+        // Test with small terminal (rows < 2)
+        let mut small_winsize = Winsize::new();
+        small_winsize.rows = 1; // Too small for status bars
+        small_winsize.cols = 80;
+        let small_state = EditorState::new(small_winsize);
+
+        // Should use all available rows since it's too small for status bars
+        assert_eq!(
+            small_state.editing_rows(),
+            0,
+            "Should handle small terminal correctly"
+        );
+
+        // Test with zero rows terminal (edge case)
+        let mut zero_winsize = Winsize::new();
+        zero_winsize.rows = 0;
+        zero_winsize.cols = 80;
+        let zero_state = EditorState::new(zero_winsize);
+
+        // Should handle zero rows gracefully
+        assert_eq!(
+            zero_state.editing_rows(),
+            0,
+            "Should handle zero-row terminal"
+        );
+    }
+
+    #[test]
+    fn test_editor_state_scroll_to_cursor() {
+        // Create a test state
+        let mut winsize = Winsize::new();
+        winsize.rows = 10; // Small window for easier testing
+        winsize.cols = 20;
+        let mut state = EditorState::new(winsize);
+
+        // Test case 1: Cursor is within visible area - nothing should change
+        state.file_row = 5;
+        state.file_col = 5;
+        state.scroll_row = 0;
+        state.scroll_col = 0;
+
+        state.scroll_to_cursor();
+
+        assert_eq!(
+            state.scroll_row, 0,
+            "Scroll row shouldn't change when cursor is visible"
+        );
+        assert_eq!(
+            state.scroll_col, 0,
+            "Scroll col shouldn't change when cursor is visible"
+        );
+        assert_eq!(
+            state.cursor_row, 5,
+            "Cursor row should be file_row - scroll_row"
+        );
+        assert_eq!(
+            state.cursor_col, 5,
+            "Cursor col should be file_col - scroll_col"
+        );
+
+        // Test case 2: Cursor is below visible area - scroll down
+        state.file_row = 15; // Beyond the visible area
+        state.file_col = 5;
+        state.scroll_row = 0;
+        state.scroll_col = 0;
+
+        state.scroll_to_cursor();
+
+        // Should scroll to make cursor visible
+        assert!(
+            state.scroll_row > 0,
+            "Should scroll down when cursor is below visible area"
+        );
+        assert_eq!(state.scroll_col, 0, "Scroll col shouldn't change");
+        assert_eq!(
+            state.cursor_row,
+            state.file_row - state.scroll_row,
+            "Cursor row should be file_row - scroll_row"
+        );
+
+        // Test case 3: Cursor is above visible area - scroll up
+        state.file_row = 3;
+        state.file_col = 5;
+        state.scroll_row = 5; // Scrolled down too far
+        state.scroll_col = 0;
+
+        state.scroll_to_cursor();
+
+        assert_eq!(
+            state.scroll_row, 3,
+            "Should scroll up when cursor is above visible area"
+        );
+        assert_eq!(state.scroll_col, 0, "Scroll col shouldn't change");
+        assert_eq!(
+            state.cursor_row, 0,
+            "Cursor row should be file_row - scroll_row"
+        );
+
+        // Test case 4: Cursor is right of visible area - scroll right
+        state.file_row = 5;
+        state.file_col = 25; // Beyond visible columns (0-19)
+        state.scroll_row = 0;
+        state.scroll_col = 0;
+
+        state.scroll_to_cursor();
+
+        assert_eq!(state.scroll_row, 0, "Scroll row shouldn't change");
+        assert!(
+            state.scroll_col > 0,
+            "Should scroll right when cursor is beyond right edge"
+        );
+        assert_eq!(
+            state.cursor_col,
+            state.file_col - state.scroll_col,
+            "Cursor col should be file_col - scroll_col"
+        );
+
+        // Test case 5: Cursor is left of visible area - scroll left
+        state.file_row = 5;
+        state.file_col = 5;
+        state.scroll_row = 0;
+        state.scroll_col = 10; // Scrolled right too far
+
+        state.scroll_to_cursor();
+
+        assert_eq!(state.scroll_row, 0, "Scroll row shouldn't change");
+        assert_eq!(
+            state.scroll_col, 5,
+            "Should scroll left when cursor is beyond left edge"
+        );
+        assert_eq!(
+            state.cursor_col, 0,
+            "Cursor col should be file_col - scroll_col"
+        );
+    }
+
+    #[test]
+    fn test_editor_state_cursor_movement() {
+        // Create a test buffer with some content for cursor movement tests
+        let test_content = b"First line\nSecond line\nThird line with\ttab\nFourth line\n";
+        let buffer = create_test_file_buffer(test_content);
+
+        // Create an editor state with a small window
+        let mut winsize = Winsize::new();
+        winsize.rows = 10;
+        winsize.cols = 20;
+        let mut state = EditorState::new(winsize);
+
+        // Test cursor_up when already at top row - should do nothing
+        state.file_row = 0;
+        state.file_col = 5;
+        state.cursor_up(&buffer);
+        assert_eq!(state.file_row, 0, "Can't move up from the top row");
+        assert_eq!(state.file_col, 5, "Column shouldn't change");
+
+        // Test cursor_up from a lower position
+        state.file_row = 2;
+        state.file_col = 5;
+        state.cursor_up(&buffer);
+        assert_eq!(state.file_row, 1, "Should move up one row");
+        assert_eq!(
+            state.file_col, 5,
+            "Column shouldn't change when it fits on the line"
+        );
+
+        // Test cursor_down
+        state.file_row = 1;
+        state.file_col = 5;
+        state.cursor_down(&buffer);
+        assert_eq!(state.file_row, 2, "Should move down one row");
+        assert_eq!(
+            state.file_col, 5,
+            "Column shouldn't change when it fits on the line"
+        );
+
+        // Test cursor_down at bottom row - should do nothing
+        state.file_row = buffer.count_lines() - 1; // Last line
+        state.file_col = 5;
+        state.cursor_down(&buffer);
+        assert_eq!(
+            state.file_row,
+            buffer.count_lines() - 1,
+            "Can't move down from the bottom row"
+        );
+        assert_eq!(state.file_col, 5, "Column shouldn't change");
+
+        // Test cursor_left
+        state.file_row = 1;
+        state.file_col = 5;
+        state.cursor_left(&buffer);
+        assert_eq!(state.file_row, 1, "Row shouldn't change");
+        assert_eq!(state.file_col, 4, "Column should decrease by 1");
+
+        // Test cursor_left at beginning of line - move to end of previous line
+        state.file_row = 1;
+        state.file_col = 0;
+        state.cursor_left(&buffer);
+        assert_eq!(state.file_row, 0, "Should move to previous row");
+        assert!(
+            state.file_col > 0,
+            "Column should move to end of previous line"
+        );
+
+        // Test cursor_right
+        state.file_row = 1;
+        state.file_col = 5;
+        state.cursor_right(&buffer);
+        assert_eq!(state.file_row, 1, "Row shouldn't change");
+        assert_eq!(state.file_col, 6, "Column should increase by 1");
+
+        // Test cursor_right at end of line - move to beginning of next line
+        // First get the line length
+        let line_len = buffer.line_length(1, state.tab_size);
+        state.file_row = 1;
+        state.file_col = line_len; // End of line
+        state.cursor_right(&buffer);
+        assert_eq!(state.file_row, 2, "Should move to next row");
+        assert_eq!(
+            state.file_col, 0,
+            "Column should be at beginning of next line"
+        );
+
+        // Test cursor_home - move to beginning of line
+        state.file_row = 1;
+        state.file_col = 5;
+        state.cursor_home();
+        assert_eq!(state.file_row, 1, "Row shouldn't change");
+        assert_eq!(state.file_col, 0, "Column should be 0 (beginning of line)");
+
+        // Test cursor_end - move to end of line
+        state.file_row = 1;
+        state.file_col = 0;
+        state.cursor_end(&buffer);
+        assert_eq!(state.file_row, 1, "Row shouldn't change");
+        assert_eq!(state.file_col, line_len, "Column should be at end of line");
+    }
+
+    #[test]
+    fn test_editor_state_page_navigation() {
+        // Create a test buffer with multiple lines
+        let mut test_content = Vec::new();
+        for i in 0..20 {
+            let line = format!("Line {i}\n");
+            test_content.extend_from_slice(line.as_bytes());
+        }
+        let buffer = create_test_file_buffer(&test_content);
+
+        // Create an editor state with a small window
+        let mut winsize = Winsize::new();
+        winsize.rows = 10; // 8 editing rows after subtracting status bars
+        winsize.cols = 20;
+        let mut state = EditorState::new(winsize);
+
+        // Test page_up from top (should stay at top)
+        state.file_row = 0;
+        state.file_col = 2;
+        state.scroll_row = 0;
+        state.page_up(&buffer);
+        assert_eq!(state.file_row, 0, "Should remain at top row");
+        assert_eq!(state.scroll_row, 0, "Scroll row should remain at top");
+
+        // Move to middle of file and test page_up
+        let editing_rows = state.editing_rows();
+        state.file_row = 15;
+        state.file_col = 2;
+        state.scroll_row = 10;
+
+        // First store the current values to calculate expected results
+        let prev_file_row = state.file_row;
+        let prev_scroll_row = state.scroll_row;
+
+        // Page up should move cursor and scroll up by editing_rows
+        state.page_up(&buffer);
+
+        // Check that we moved up by the correct number of rows
+        assert!(state.file_row < prev_file_row, "Should move cursor up");
+        assert!(state.scroll_row < prev_scroll_row, "Should scroll up");
+
+        // If we were already at top, don't go negative
+        if prev_file_row >= editing_rows {
+            assert_eq!(
+                state.file_row,
+                prev_file_row - editing_rows,
+                "Should move up by editing_rows"
+            );
+        } else {
+            assert_eq!(state.file_row, 0, "Should move to top row if near top");
+        }
+
+        // Similar check for scroll
+        if prev_scroll_row >= editing_rows {
+            assert_eq!(
+                state.scroll_row,
+                prev_scroll_row - editing_rows,
+                "Should scroll up by editing_rows"
+            );
+        } else {
+            assert_eq!(state.scroll_row, 0, "Should scroll to top row if near top");
+        }
+
+        // Test page_down from current position
+        let prev_file_row = state.file_row;
+        let prev_scroll_row = state.scroll_row;
+
+        state.page_down(&buffer);
+
+        // Check that we moved down by the correct number of rows
+        assert!(state.file_row > prev_file_row, "Should move cursor down");
+        assert!(
+            state.scroll_row >= prev_scroll_row,
+            "Should scroll down or stay"
+        );
+
+        // Test page_down from bottom of file
+        state.file_row = buffer.count_lines() - 2;
+        state.file_col = 2;
+        state.page_down(&buffer);
+        assert_eq!(
+            state.file_row,
+            buffer.count_lines() - 1,
+            "Should move to last line but not beyond"
+        );
+    }
+
+    #[test]
+    fn test_editor_state_cursor_column_adjustments() {
+        // Create a buffer with varying line lengths to test column adjustments
+        let varying_content =
+            b"Short\nLoooooooonger line\nVery very long line for testing\nShort again";
+        let buffer = create_test_file_buffer(varying_content);
+
+        // Create an editor state
+        let mut winsize = Winsize::new();
+        winsize.rows = 10;
+        winsize.cols = 20;
+        let mut state = EditorState::new(winsize);
+
+        // Position cursor at end of long line
+        state.file_row = 2; // "Very very long line for testing"
+        state.file_col = 30;
+
+        // Now move up to shorter line
+        state.cursor_up(&buffer);
+
+        // Verify cursor column is adjusted to fit the shorter line
+        assert_eq!(state.file_row, 1, "Should move up to shorter line");
+        assert!(
+            state.file_col < 30,
+            "Column should be adjusted to fit shorter line"
+        );
+        let line1_len = buffer.line_length(1, state.tab_size);
+        assert_eq!(
+            state.file_col, line1_len,
+            "Column should be at end of shorter line"
+        );
+
+        // Test similar adjustment moving down to shorter line
+        state.file_row = 1; // "Loooooooonger line"
+        state.file_col = line1_len; // At end of this line
+
+        // Move down to next line (which is longer)
+        state.cursor_down(&buffer);
+
+        // Verify cursor position - should maintain column
+        assert_eq!(state.file_row, 2, "Should move down to next line");
+        assert_eq!(
+            state.file_col, line1_len,
+            "Column should be preserved when moving to longer line"
+        );
+
+        // Move down to shortest line
+        state.file_row = 2;
+        state.file_col = 20; // Somewhere in the middle of the long line
+        state.cursor_down(&buffer);
+
+        // Verify cursor is adjusted
+        assert_eq!(state.file_row, 3, "Should move down to shorter line");
+        let line3_len = buffer.line_length(3, state.tab_size);
+        assert_eq!(
+            state.file_col, line3_len,
+            "Column should be adjusted to end of shortest line"
+        );
+    }
+
+    #[test]
+    fn test_editor_state_integrated_operations() {
+        // Create a buffer with multiple lines
+        let content = b"First line\nSecond line\nThird line\nFourth line\nFifth line";
+        let buffer = create_test_file_buffer(content);
+
+        // Create an editor state
+        let mut winsize = Winsize::new();
+        winsize.rows = 5; // Small window to test scrolling
+        winsize.cols = 15;
+        let mut state = EditorState::new(winsize);
+
+        // Test a sequence of operations that would typically be performed
+
+        // 1. Start at the beginning
+        assert_eq!(state.file_row, 0);
+        assert_eq!(state.file_col, 0);
+
+        // 2. Move down several times
+        for _ in 0..3 {
+            state.cursor_down(&buffer);
+        }
+        assert_eq!(
+            state.file_row, 3,
+            "Should be at fourth line after moving down 3 times"
+        );
+
+        // 3. Move to end of line and then right (should go to next line)
+        state.cursor_end(&buffer);
+        let line_len = buffer.line_length(3, state.tab_size);
+        assert_eq!(state.file_col, line_len, "Should be at end of line");
+
+        state.cursor_right(&buffer);
+        assert_eq!(
+            state.file_row, 4,
+            "Should move to next line after right from end"
+        );
+        assert_eq!(state.file_col, 0, "Should be at beginning of new line");
+
+        // 4. Ensure scrolling happens appropriately
+        state.scroll_to_cursor();
+        // In a small 5-row window with 2 rows for status, only 3 content rows are visible
+        // We're now at line 4, so scrolling should have happened
+        assert!(state.scroll_row > 0, "Should have scrolled down for line 4");
+
+        // 5. Page up should move back toward the top
+        state.page_up(&buffer);
+        assert!(state.file_row < 4, "Page up should move cursor up");
+        assert!(
+            state.scroll_row < state.file_row,
+            "Scroll row should be less than file row after page up"
+        );
+
+        // 6. Home followed by repeated right movements
+        state.cursor_home();
+        assert_eq!(state.file_col, 0, "Home should move to beginning of line");
+
+        for _ in 0..5 {
+            state.cursor_right(&buffer);
+        }
+        assert_eq!(state.file_col, 5, "Should move 5 positions right");
+
+        // 7. Left movements including across line boundaries
+        state.file_row = 1;
+        state.file_col = 0;
+        state.cursor_left(&buffer);
+        assert_eq!(state.file_row, 0, "Should move up to previous line");
+        let prev_line_len = buffer.line_length(0, state.tab_size);
+        assert_eq!(
+            state.file_col, prev_line_len,
+            "Should move to end of previous line"
+        );
     }
 }
