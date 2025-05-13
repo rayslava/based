@@ -30,6 +30,8 @@ and no libc is used either. Only Linux syscalls.
   rework the code so they're not needed.
 - Under any circumstances do not use or import `std` and `core` crates. Do not
   use types from there, do not write code using such types.
+- It is possible to use `std` in test module though. But only inside the test
+  module and nowhere else.
 
 # Build process
 

@@ -166,22 +166,30 @@ pub fn set_bold() -> SysResult {
     puts("\x1b[1m")
 }
 
+pub fn save_cursor() -> SysResult {
+    puts("\x1b[s")
+}
+
+pub fn restore_cursor() -> SysResult {
+    puts("\x1b[u")
+}
+
 // Print a message to the last line of the screen
 pub fn print_status(winsize: Winsize, msg: &str) -> SysResult {
     // Save cursor position
-    puts("\x1b[s")?;
+    save_cursor()?;
 
     // Move to the last row
     move_cursor(winsize.rows as usize - 1, 0)?;
 
     // Clear the line
-    puts("\x1b[K")?;
+    clear_line()?;
 
     // Print the message
     puts(msg)?;
 
     // Restore cursor position
-    puts("\x1b[u")
+    restore_cursor()
 }
 
 // Print a normal message to the status line
@@ -193,13 +201,13 @@ pub fn print_message(winsize: Winsize, msg: &str) -> SysResult {
 // Print a warning message (yellow) to the status line
 pub fn print_warning(winsize: Winsize, msg: &str) -> SysResult {
     // Save cursor position
-    puts("\x1b[s")?;
+    save_cursor()?;
 
     // Move to the last row
     move_cursor(winsize.rows as usize - 1, 0)?;
 
     // Clear the line
-    puts("\x1b[K")?;
+    clear_line()?;
 
     // Set yellow color
     set_fg_color(3)?;
@@ -211,19 +219,19 @@ pub fn print_warning(winsize: Winsize, msg: &str) -> SysResult {
     reset_colors()?;
 
     // Restore cursor position
-    puts("\x1b[u")
+    restore_cursor()
 }
 
 // Print an error message (bold red) to the status line
 pub fn print_error(winsize: Winsize, msg: &str) -> SysResult {
     // Save cursor position
-    puts("\x1b[s")?;
+    save_cursor()?;
 
     // Move to the last row
     move_cursor(winsize.rows as usize - 1, 0)?;
 
     // Clear the line
-    puts("\x1b[K")?;
+    clear_line()?;
 
     // Set bold red
     set_bold()?;
@@ -236,7 +244,7 @@ pub fn print_error(winsize: Winsize, msg: &str) -> SysResult {
     reset_colors()?;
 
     // Restore cursor position
-    puts("\x1b[u")
+    restore_cursor()
 }
 
 pub fn draw_status_bar(winsize: Winsize, row: usize, col: usize) -> SysResult {
@@ -246,7 +254,7 @@ pub fn draw_status_bar(winsize: Winsize, row: usize, col: usize) -> SysResult {
     }
 
     // Save cursor position
-    puts("\x1b[s")?;
+    save_cursor()?;
 
     // Move to status bar line (second to last row)
     move_cursor(winsize.rows as usize - 2, 0)?;
@@ -288,13 +296,13 @@ pub fn draw_status_bar(winsize: Winsize, row: usize, col: usize) -> SysResult {
 
     // Clear to the end of line (makes sure status bar fills whole width)
     // ESC [ K - Clear from cursor to end of line
-    puts("\x1b[K")?;
+    clear_line()?;
 
     // Reset colors
     reset_colors()?;
 
     // Restore cursor position
-    puts("\x1b[u")
+    restore_cursor()
 }
 
 #[cfg(test)]

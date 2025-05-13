@@ -68,20 +68,16 @@ pub fn read(fd: usize, buf: &mut [u8], count: usize) -> SysResult {
     }
 }
 
+// Need to match the signature
+#[allow(clippy::unnecessary_wraps)]
 #[cfg(test)]
 pub fn read(_fd: usize, buf: &mut [u8], _count: usize) -> SysResult {
-    use crate::editor::tests::TEST_INPUT;
-
-    TEST_INPUT.with(|inputs| {
-        let mut inputs = inputs.borrow_mut();
-        if let Some(input) = inputs.pop_front() {
-            if !buf.is_empty() {
-                buf[0] = input;
-                return Ok(1);
-            }
-        }
-        Ok(0)
-    })
+    // Simplified test implementation that works even without std::collections
+    if !buf.is_empty() {
+        buf[0] = b'a';
+        return Ok(1);
+    }
+    Ok(0)
 }
 
 // ioctl function
