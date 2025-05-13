@@ -1,6 +1,6 @@
 use crate::syscall::{
     MAP_PRIVATE, O_RDONLY, PROT_READ, SEEK_END, SEEK_SET, STDIN, STDOUT, SysResult, close, lseek,
-    mmap, open, putchar, read,
+    mmap, open, putchar, read, write_unchecked,
 };
 use crate::terminal::{
     clear_line, clear_screen, draw_status_bar, enter_alternate_screen, exit_alternate_screen,
@@ -15,21 +15,239 @@ use crate::termios::Winsize;
 
 enum FileBufferError {
     WrongSize,
+    BufferFull,
+    InvalidOperation,
 }
 
 struct FileBuffer {
-    content: *const u8, // Pointer to file content
-    size: usize,        // Size of the file
+    content: *mut u8,     // Pointer to file content
+    size: usize,          // Current size of the file
+    capacity: usize,      // Maximum capacity of the buffer
+    modified: bool,       // Whether the file has been modified
+    original_addr: usize, // Original address from mmap (for cleanup)
+    original_size: usize, // Original size from mmap (for cleanup)
 }
 
 impl FileBuffer {
     fn load_from_mmap(addr: usize, size: usize) -> Result<Self, FileBufferError> {
         match (addr, size) {
-            (0, _) | (_, 0) => Err(FileBufferError::WrongSize),
-            _ => Ok(FileBuffer {
-                content: addr as *const u8,
-                size,
-            }),
+            (0, _) | (_, 0) => {
+                // For empty or non-existent files, allocate a small buffer
+                let new_capacity = 4096; // Start with one page
+                let prot = crate::syscall::PROT_READ | crate::syscall::PROT_WRITE;
+                let flags = crate::syscall::MAP_PRIVATE | crate::syscall::MAP_ANONYMOUS;
+                let Ok(new_buffer) =
+                    crate::syscall::mmap(0, new_capacity, prot, flags, usize::MAX, 0)
+                else {
+                    return Err(FileBufferError::WrongSize);
+                };
+
+                Ok(FileBuffer {
+                    content: new_buffer as *mut u8,
+                    size: 0,
+                    capacity: new_capacity,
+                    modified: true,
+                    original_addr: 0,
+                    original_size: 0,
+                })
+            }
+            _ => {
+                // For existing files, copy the content to a new buffer with extra capacity
+                let new_capacity = size + 4096; // Add some extra space
+                let prot = crate::syscall::PROT_READ | crate::syscall::PROT_WRITE;
+                let flags = crate::syscall::MAP_PRIVATE | crate::syscall::MAP_ANONYMOUS;
+                let Ok(new_buffer) =
+                    crate::syscall::mmap(0, new_capacity, prot, flags, usize::MAX, 0)
+                else {
+                    return Err(FileBufferError::WrongSize);
+                };
+
+                // Copy content from original buffer to new buffer
+                unsafe {
+                    let src = addr as *const u8;
+                    let dst = new_buffer as *mut u8;
+                    for i in 0..size {
+                        *dst.add(i) = *src.add(i);
+                    }
+                }
+
+                Ok(FileBuffer {
+                    content: new_buffer as *mut u8,
+                    size,
+                    capacity: new_capacity,
+                    modified: false,
+                    original_addr: addr,
+                    original_size: size,
+                })
+            }
+        }
+    }
+
+    // Insert a character at a specific position
+    fn insert_at_position(&mut self, pos: usize, ch: u8) -> Result<(), FileBufferError> {
+        if self.size >= self.capacity {
+            return Err(FileBufferError::BufferFull);
+        }
+
+        if pos > self.size {
+            return Err(FileBufferError::InvalidOperation);
+        }
+
+        // Shift content to make space for the new character
+        unsafe {
+            if pos < self.size {
+                // Make space by moving everything after the insertion point
+                for i in (pos..self.size).rev() {
+                    *self.content.add(i + 1) = *self.content.add(i);
+                }
+            }
+
+            // Insert the character
+            *self.content.add(pos) = ch;
+        }
+
+        // Update size and modified status
+        self.size += 1;
+        self.modified = true;
+
+        Ok(())
+    }
+
+    // Delete a character at a specific position
+    fn delete_at_position(&mut self, pos: usize) -> Result<(), FileBufferError> {
+        if self.size == 0 || pos >= self.size {
+            return Err(FileBufferError::InvalidOperation);
+        }
+
+        // Shift content to fill the deleted character's space
+        unsafe {
+            for i in pos..(self.size - 1) {
+                *self.content.add(i) = *self.content.add(i + 1);
+            }
+        }
+
+        // Update size and modified status
+        self.size -= 1;
+        self.modified = true;
+
+        Ok(())
+    }
+
+    // Insert a character at a specific row and column
+    fn insert_char(&mut self, row: usize, col: usize, ch: u8) -> Result<(), FileBufferError> {
+        // Find the actual position in the buffer
+        let Some(line_start) = self.find_line_start(row) else {
+            return Err(FileBufferError::InvalidOperation);
+        };
+
+        // Find the line end for bound checking
+        let line_end = self.find_line_end(row).unwrap_or(line_start);
+
+        // Check if column is beyond current line length
+        let effective_col = if col > (line_end - line_start) {
+            line_end - line_start
+        } else {
+            col
+        };
+
+        // Calculate insertion position
+        let insert_pos = line_start + effective_col;
+
+        self.insert_at_position(insert_pos, ch)
+    }
+
+    // Delete a character at a specific row and column
+    fn delete_char(&mut self, row: usize, col: usize) -> Result<(), FileBufferError> {
+        // Find the actual position in the buffer
+        let Some(line_start) = self.find_line_start(row) else {
+            return Err(FileBufferError::InvalidOperation);
+        };
+
+        // Find the line end
+        let line_end = self.find_line_end(row).unwrap_or(line_start);
+
+        // Check if the column is valid for deletion
+        if col >= (line_end - line_start) {
+            return Err(FileBufferError::InvalidOperation);
+        }
+
+        // Calculate deletion position
+        let delete_pos = line_start + col;
+
+        self.delete_at_position(delete_pos)
+    }
+
+    // Delete a character before the cursor (backspace)
+    fn backspace_at(&mut self, row: usize, col: usize) -> Result<(), FileBufferError> {
+        if col > 0 {
+            // Normal case - delete character before cursor in the same line
+            self.delete_char(row, col - 1)
+        } else if row > 0 {
+            // At the beginning of a line - join with previous line
+            // Find the end of the previous line (should be a newline)
+            let Some(prev_line_end) = self.find_line_end(row - 1) else {
+                return Err(FileBufferError::InvalidOperation);
+            };
+
+            // Delete the newline at the end of the previous line
+            self.delete_at_position(prev_line_end)
+        } else {
+            // At the beginning of file - nothing to delete
+            Err(FileBufferError::InvalidOperation)
+        }
+    }
+
+    // Insert a newline at the current position
+    fn insert_newline(&mut self, row: usize, col: usize) -> Result<(), FileBufferError> {
+        self.insert_char(row, col, b'\n')
+    }
+
+    // Check if the file has been modified
+    fn is_modified(&self) -> bool {
+        self.modified
+    }
+
+    // Save file to disk
+    fn save_to_file(&mut self, path: &[u8]) -> SysResult {
+        use crate::syscall::{O_CREAT, O_TRUNC, O_WRONLY, close, open};
+
+        // Open or create the file for writing
+        let fd = open(path, O_WRONLY | O_CREAT | O_TRUNC)?;
+
+        // Write the content, handling partial writes
+        let mut bytes_written = 0;
+        while bytes_written < self.size {
+            let remaining = self.size - bytes_written;
+            let result =
+                unsafe { write_unchecked(fd, self.content.add(bytes_written), remaining) }?;
+
+            bytes_written += result;
+
+            // If no bytes were written in this iteration, break to avoid an infinite loop
+            if result == 0 {
+                break;
+            }
+        }
+
+        // Close the file
+        close(fd)?;
+
+        // Update modified status
+        self.modified = false;
+
+        Ok(bytes_written)
+    }
+
+    // Clean up resources when dropping FileBuffer
+    fn cleanup(&self) {
+        if !self.content.is_null() && self.capacity > 0 {
+            // We don't handle errors during cleanup as we can't do much about them
+            let _ = crate::syscall::munmap(self.content as usize, self.capacity);
+        }
+
+        // If we had an original mapping, unmap it too
+        if self.original_addr != 0 && self.original_size > 0 {
+            let _ = crate::syscall::munmap(self.original_addr, self.original_size);
         }
     }
 
@@ -433,6 +651,7 @@ enum Key {
     ArrowLeft,
     Enter,
     Backspace,
+    Delete,
     Quit,
     Refresh,
     Home,
@@ -440,6 +659,7 @@ enum Key {
     PageUp,
     PageDown,
     OpenFile,
+    SaveFile,
     Combination([u8; 2]),
 }
 
@@ -490,6 +710,18 @@ fn process_escape_sequence() -> Key {
 
                     if fourth_ch == b'~' {
                         return Key::PageDown;
+                    }
+                    Key::Char(fourth_ch)
+                }
+
+                // Delete key: ESC [ 3 ~
+                b'3' => {
+                    let Some(fourth_ch) = read_char() else {
+                        return Key::Char(third_ch);
+                    };
+
+                    if fourth_ch == b'~' {
+                        return Key::Delete;
                     }
                     Key::Char(fourth_ch)
                 }
@@ -575,6 +807,7 @@ fn read_key() -> Option<Key> {
         // Emacs key bindings - Control characters
         1 => Some(Key::Home),       // C-a (beginning-of-line)
         2 => Some(Key::ArrowLeft),  // C-b (backward-char)
+        4 => Some(Key::Delete),     // C-d (delete-char)
         5 => Some(Key::End),        // C-e (end-of-line)
         6 => Some(Key::ArrowRight), // C-f (forward-char)
         12 => Some(Key::Refresh),   // C-l (refresh screen)
@@ -594,6 +827,9 @@ fn read_key() -> Option<Key> {
                 } else if next_ch == 6 {
                     // Ctrl+X Ctrl+F (Open file)
                     return Some(Key::OpenFile);
+                } else if next_ch == 19 {
+                    // Ctrl+X Ctrl+S (Save file)
+                    return Some(Key::SaveFile);
                 }
 
                 // Return the combination
@@ -655,7 +891,11 @@ fn open_file(file_path: &[u8]) -> Result<FileBuffer, EditorError> {
 }
 
 #[cfg(not(tarpaulin_include))]
-fn process_cursor_key(key: Key, state: &mut EditorState, file_buffer: &FileBuffer) -> SysResult {
+fn process_cursor_key(
+    key: Key,
+    state: &mut EditorState,
+    file_buffer: &mut FileBuffer,
+) -> SysResult {
     match key {
         Key::ArrowUp => state.cursor_up(file_buffer),
         Key::ArrowDown => state.cursor_down(file_buffer),
@@ -666,19 +906,102 @@ fn process_cursor_key(key: Key, state: &mut EditorState, file_buffer: &FileBuffe
         Key::PageUp => state.page_up(file_buffer),
         Key::PageDown => state.page_down(file_buffer),
         Key::Enter => {
-            let line_count = file_buffer.count_lines();
-            if state.file_row + 1 < line_count {
-                state.file_row += 1;
-                state.file_col = 0;
+            // Insert a newline at the current cursor position
+            if let Err(e) = file_buffer.insert_newline(state.file_row, state.file_col) {
+                print_error(
+                    state.winsize,
+                    match e {
+                        FileBufferError::BufferFull => "Buffer is full",
+                        _ => "Failed to insert newline",
+                    },
+                )?;
+                return Ok(0);
             }
+
+            // Move cursor to beginning of next line
+            state.file_row += 1;
+            state.file_col = 0;
         }
         Key::Backspace => {
-            if state.file_col > 0 {
-                state.file_col -= 1;
+            // Delete the character before the cursor
+            if state.file_col > 0 || state.file_row > 0 {
+                // Try to delete the character
+                if let Err(e) = file_buffer.backspace_at(state.file_row, state.file_col) {
+                    print_error(
+                        state.winsize,
+                        match e {
+                            FileBufferError::InvalidOperation => "Can't delete at this position",
+                            _ => "Error deleting character",
+                        },
+                    )?;
+                    return Ok(0);
+                }
+
+                // Update cursor position
+                if state.file_col > 0 {
+                    state.file_col -= 1;
+                } else if state.file_row > 0 {
+                    // We've joined the current line with the previous one
+                    // Move cursor to the end of the previous line
+                    state.file_row -= 1;
+                    state.file_col = file_buffer.line_length(state.file_row, state.tab_size);
+                }
             }
+        }
+        Key::Delete => {
+            // Delete the character at the cursor position
+            let line_count = file_buffer.count_lines();
+            let current_line_len = file_buffer.line_length(state.file_row, state.tab_size);
+
+            if state.file_col < current_line_len {
+                // Normal case - delete character at cursor in the same line
+                if let Err(e) = file_buffer.delete_char(state.file_row, state.file_col) {
+                    print_error(
+                        state.winsize,
+                        match e {
+                            FileBufferError::InvalidOperation => "Can't delete at this position",
+                            _ => "Error deleting character",
+                        },
+                    )?;
+                    return Ok(0);
+                }
+                // Cursor position stays the same
+            } else if state.file_row + 1 < line_count {
+                // At end of line - join with next line by deleting the newline
+                if let Some(line_end) = file_buffer.find_line_end(state.file_row) {
+                    if let Err(e) = file_buffer.delete_at_position(line_end) {
+                        print_error(
+                            state.winsize,
+                            match e {
+                                FileBufferError::InvalidOperation => "Can't join lines",
+                                _ => "Error deleting newline",
+                            },
+                        )?;
+                        return Ok(0);
+                    }
+                    // Cursor stays at same position (now in middle of joined line)
+                }
+            }
+        }
+        Key::Char(ch) => {
+            // Insert the character at the current cursor position
+            if let Err(e) = file_buffer.insert_char(state.file_row, state.file_col, ch) {
+                print_error(
+                    state.winsize,
+                    match e {
+                        FileBufferError::BufferFull => "Buffer is full",
+                        _ => "Failed to insert character",
+                    },
+                )?;
+                return Ok(0);
+            }
+
+            // Move cursor right
+            state.file_col += 1;
         }
         _ => return Ok(0),
     }
+
     state.scroll_to_cursor();
     draw_screen(state, file_buffer)
 }
@@ -738,6 +1061,31 @@ fn handle_open_file(state: &mut EditorState) -> Result<FileBuffer, EditorError> 
     }
 }
 
+// Handle saving the file
+fn handle_save_file(
+    state: &mut EditorState,
+    file_buffer: &mut FileBuffer,
+    file_path: &[u8],
+) -> SysResult {
+    save_cursor()?;
+
+    if file_buffer.save_to_file(file_path).is_ok() {
+        print_message(state.winsize, "File saved successfully")?;
+    } else {
+        print_error(state.winsize, "Error saving file")?;
+    }
+
+    restore_cursor()?;
+    Ok(0)
+}
+
+// Implement Drop for FileBuffer
+impl Drop for FileBuffer {
+    fn drop(&mut self) {
+        self.cleanup();
+    }
+}
+
 pub fn run_editor() -> Result<(), EditorError> {
     enter_alternate_screen()?;
     clear_screen()?;
@@ -774,6 +1122,9 @@ pub fn run_editor() -> Result<(), EditorError> {
                         file_buffer = buf;
                     }
                 }
+                Key::SaveFile => {
+                    handle_save_file(&mut state, &mut file_buffer, file_path)?;
+                }
                 Key::ArrowUp
                 | Key::ArrowDown
                 | Key::ArrowLeft
@@ -783,13 +1134,31 @@ pub fn run_editor() -> Result<(), EditorError> {
                 | Key::PageUp
                 | Key::PageDown
                 | Key::Enter
-                | Key::Backspace => {
-                    process_cursor_key(key, &mut state, &file_buffer)?;
+                | Key::Backspace
+                | Key::Delete => {
+                    process_cursor_key(key, &mut state, &mut file_buffer)?;
                 }
-                Key::Char(_) | Key::Combination(_) => {}
+                Key::Char(_) | Key::Combination(_) => {
+                    process_cursor_key(key, &mut state, &mut file_buffer)?;
+                }
             }
         }
+
+        // Update status bar with edit status
+        let status = if file_buffer.is_modified() {
+            "Modified"
+        } else {
+            "Saved"
+        };
         draw_status_bar(state.winsize, state.file_row, state.file_col)?;
+
+        // Display file status in bottom line
+        move_cursor(state.winsize.rows as usize - 1, 0)?;
+        clear_line()?;
+        write_buf(status.as_bytes())?;
+
+        // Move cursor back to editing position
+        move_cursor(state.cursor_row, state.cursor_col)?;
     }
 
     exit_alternate_screen()?;
@@ -946,34 +1315,89 @@ pub mod tests {
     // Tests for FileBuffer functions
     #[test]
     fn test_file_buffer_load_from_mmap() {
-        // Test valid parameters
-        let addr = 1000; // Some non-zero address
-        let size = 100; // Some non-zero size
-        let result = FileBuffer::load_from_mmap(addr, size);
+        use crate::syscall::{MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
+
+        // Test with empty parameters (should create a new empty buffer)
+        let empty_result = FileBuffer::load_from_mmap(0, 0);
+        assert!(
+            empty_result.is_ok(),
+            "Should successfully create empty buffer"
+        );
+
+        if let Ok(buffer) = empty_result {
+            assert!(!buffer.content.is_null(), "Should allocate a valid buffer");
+            assert_eq!(buffer.size, 0, "Size should be 0 for empty buffer");
+            assert_eq!(
+                buffer.capacity, 4096,
+                "Capacity should be one page (4096 bytes)"
+            );
+            assert!(
+                buffer.modified,
+                "New empty buffer should be marked as modified"
+            );
+            assert_eq!(buffer.original_addr, 0, "Original address should be 0");
+            assert_eq!(buffer.original_size, 0, "Original size should be 0");
+        }
+
+        // Create a test buffer through mmap for existing content test
+        let test_size = 100;
+        let prot = PROT_READ | PROT_WRITE;
+        let flags = MAP_PRIVATE | MAP_ANONYMOUS;
+        let Ok(addr) = crate::syscall::mmap(0, test_size, prot, flags, usize::MAX, 0) else {
+            panic!("Failed to allocate test buffer")
+        };
+
+        // Fill the buffer with some test data
+        unsafe {
+            for i in 0..test_size {
+                *((addr as *mut u8).add(i)) = u8::try_from(i % 256).unwrap();
+            }
+        }
+
+        // Test with valid parameters
+        let result = FileBuffer::load_from_mmap(addr, test_size);
         assert!(
             result.is_ok(),
             "Should successfully create FileBuffer with valid parameters"
         );
 
         if let Ok(buffer) = result {
-            assert_eq!(
+            assert_ne!(
                 buffer.content as usize, addr,
-                "Content pointer should match provided address"
+                "Content pointer should be new allocation, not original address"
             );
-            assert_eq!(buffer.size, size, "Size should match provided size");
+            assert_eq!(buffer.size, test_size, "Size should match provided size");
+            assert!(
+                buffer.capacity >= test_size,
+                "Capacity should be at least the test size"
+            );
+            assert_eq!(
+                buffer.original_addr, addr,
+                "Original address should be saved"
+            );
+            assert_eq!(
+                buffer.original_size, test_size,
+                "Original size should be saved"
+            );
+            assert!(
+                !buffer.modified,
+                "Buffer should not be marked as modified initially"
+            );
+
+            // Verify content was copied correctly
+            unsafe {
+                for i in 0..test_size {
+                    assert_eq!(
+                        *buffer.content.add(i),
+                        u8::try_from(i % 256).unwrap(),
+                        "Content should be copied correctly"
+                    );
+                }
+            }
+
+            // Clean up test allocation (buffer will clean up its own allocation)
+            let _ = crate::syscall::munmap(addr, test_size);
         }
-
-        // Test with zero address
-        let result = FileBuffer::load_from_mmap(0, 100);
-        assert!(result.is_err(), "Should fail with zero address");
-
-        // Test with zero size
-        let result = FileBuffer::load_from_mmap(1000, 0);
-        assert!(result.is_err(), "Should fail with zero size");
-
-        // Test with both parameters zero
-        let result = FileBuffer::load_from_mmap(0, 0);
-        assert!(result.is_err(), "Should fail when both parameters are zero");
     }
 
     #[test]
@@ -1069,12 +1493,16 @@ pub mod tests {
 
     // Helper function to create a FileBuffer from a byte array for testing
     fn create_test_file_buffer(content: &[u8]) -> FileBuffer {
-        let content_ptr = content.as_ptr();
+        let content_ptr = content.as_ptr().cast_mut();
         let size = content.len();
 
         FileBuffer {
             content: content_ptr,
             size,
+            capacity: size,
+            modified: false,
+            original_addr: 0,
+            original_size: 0,
         }
     }
 
@@ -1114,8 +1542,12 @@ pub mod tests {
     fn test_file_buffer_null_pointer() {
         // Test handling of null pointer
         let buffer = FileBuffer {
-            content: std::ptr::null(), // We can use std in tests as per CLAUDE.md
+            content: std::ptr::null_mut(), // We can use std in tests as per CLAUDE.md
             size: 0,
+            capacity: 0,
+            modified: false,
+            original_addr: 0,
+            original_size: 0,
         };
 
         assert_eq!(

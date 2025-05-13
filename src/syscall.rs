@@ -8,6 +8,7 @@ pub const CLOSE: usize = 3;
 pub const EXIT: usize = 60;
 pub const IOCTL: usize = 16;
 pub const MMAP: usize = 9;
+pub const MUNMAP: usize = 11;
 pub const LSEEK: usize = 8;
 
 // Constants for seek
@@ -21,10 +22,15 @@ pub const STDOUT: usize = 1;
 
 // Flag constants for open
 pub const O_RDONLY: usize = 0;
+pub const O_WRONLY: usize = 1;
+pub const O_CREAT: usize = 64;
+pub const O_TRUNC: usize = 512;
 
 // Flag constants for mmap
 pub const PROT_READ: usize = 1;
+pub const PROT_WRITE: usize = 2;
 pub const MAP_PRIVATE: usize = 2;
+pub const MAP_ANONYMOUS: usize = 0x20;
 
 // Max error value for syscalls (typically -4095 to -1 in Linux)
 // So the "wrapped" values would be from MAX-4095 to MAX
@@ -52,6 +58,16 @@ pub fn write(fd: usize, buf: &[u8]) -> SysResult {
     let result = unsafe { syscall!(WRITE, fd, buf.as_ptr(), buf.len()) };
     if is_error(result) {
         Err(usize::MAX - result + 1) // Extract actual errno
+    } else {
+        Ok(result)
+    }
+}
+
+// Writing the data from the raw pointer
+pub fn write_unchecked(fd: usize, ptr: *const u8, len: usize) -> SysResult {
+    let result = unsafe { syscall!(WRITE, fd, ptr, len) };
+    if is_error(result) {
+        Err(usize::MAX - result + 1)
     } else {
         Ok(result)
     }
@@ -152,6 +168,16 @@ pub fn mmap(
     offset: usize,
 ) -> SysResult {
     let result = unsafe { syscall!(MMAP, addr, length, prot, flags, fd, offset) };
+    if is_error(result) {
+        Err(usize::MAX - result + 1) // Extract actual errno
+    } else {
+        Ok(result)
+    }
+}
+
+// Memory unmap function
+pub fn munmap(addr: usize, length: usize) -> SysResult {
+    let result = unsafe { syscall!(MUNMAP, addr, length) };
     if is_error(result) {
         Err(usize::MAX - result + 1) // Extract actual errno
     } else {
