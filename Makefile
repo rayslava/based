@@ -28,3 +28,6 @@ fix:
 	cargo fmt --all
 	cargo fix --all --all-features --allow-dirty --allow-staged
 	cargo clippy --fix --all-targets --all-features --allow-dirty --allow-staged -- -W clippy::pedantic
+
+size: release
+	wc -c based
