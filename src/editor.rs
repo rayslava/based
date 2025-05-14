@@ -1,6 +1,6 @@
 use crate::syscall::{
-    MAP_PRIVATE, O_RDONLY, PROT_READ, SEEK_END, SEEK_SET, STDIN, STDOUT, SysResult, close, lseek,
-    mmap, open, putchar, puts, read, write_unchecked,
+    MAP_ANONYMOUS, MAP_PRIVATE, O_RDONLY, PROT_READ, PROT_WRITE, SEEK_END, SEEK_SET, STDIN, STDOUT,
+    SysResult, close, lseek, mmap, open, putchar, puts, read, write_unchecked,
 };
 use crate::terminal::{
     clear_line, clear_screen, enter_alternate_screen, exit_alternate_screen, get_winsize,
@@ -28,60 +28,6 @@ struct FileBuffer {
 }
 
 impl FileBuffer {
-    fn load_from_mmap(addr: usize, size: usize) -> Result<Self, FileBufferError> {
-        match (addr, size) {
-            (0, _) | (_, 0) => {
-                // For empty or non-existent files, allocate a small buffer
-                let new_capacity = 4096; // Start with one page
-                let prot = crate::syscall::PROT_READ | crate::syscall::PROT_WRITE;
-                let flags = crate::syscall::MAP_PRIVATE | crate::syscall::MAP_ANONYMOUS;
-                let Ok(new_buffer) =
-                    crate::syscall::mmap(0, new_capacity, prot, flags, usize::MAX, 0)
-                else {
-                    return Err(FileBufferError::WrongSize);
-                };
-
-                Ok(FileBuffer {
-                    content: new_buffer as *mut u8,
-                    size: 0,
-                    capacity: new_capacity,
-                    modified: true,
-                })
-            }
-            _ => {
-                // For existing files, copy the content to a new buffer with extra capacity
-                let new_capacity = size + 4096; // Add some extra space
-                let prot = crate::syscall::PROT_READ | crate::syscall::PROT_WRITE;
-                let flags = crate::syscall::MAP_PRIVATE | crate::syscall::MAP_ANONYMOUS;
-                let Ok(new_buffer) =
-                    crate::syscall::mmap(0, new_capacity, prot, flags, usize::MAX, 0)
-                else {
-                    return Err(FileBufferError::WrongSize);
-                };
-
-                // Copy content from original buffer to new buffer
-                unsafe {
-                    let src = addr as *const u8;
-                    let dst = new_buffer as *mut u8;
-                    for i in 0..size {
-                        *dst.add(i) = *src.add(i);
-                    }
-                }
-
-                if addr != 0 && size > 0 {
-                    let _ = crate::syscall::munmap(addr, size);
-                }
-
-                Ok(FileBuffer {
-                    content: new_buffer as *mut u8,
-                    size,
-                    capacity: new_capacity,
-                    modified: false,
-                })
-            }
-        }
-    }
-
     // Insert a character at a specific position
     fn insert_at_position(&mut self, pos: usize, ch: u8) -> Result<(), FileBufferError> {
         if self.size >= self.capacity {
@@ -987,17 +933,39 @@ fn open_file(file_path: &[u8]) -> Result<FileBuffer, EditorError> {
     let file_size = lseek(fd, 0, SEEK_END)?;
     lseek(fd, 0, SEEK_SET)?;
 
-    let (addr, size) = if file_size == 0 {
-        static EMPTY: u8 = 0;
-        close(fd)?;
-        (&raw const EMPTY as usize, 0)
-    } else {
-        let Ok(addr) = mmap(0, file_size, PROT_READ, MAP_PRIVATE, fd, 0) else {
-            return Err(EditorError::MMapFile);
-        };
-        (addr, file_size)
+    let buffer = {
+        if file_size == 0 {
+            close(fd)?;
+            let new_capacity = 4096; // Start with one page
+            let prot = PROT_READ | PROT_WRITE;
+            let flags = MAP_PRIVATE | MAP_ANONYMOUS;
+            let Ok(new_buffer) = mmap(0, new_capacity, prot, flags, usize::MAX, 0) else {
+                return Err(FileBufferError::WrongSize.into());
+            };
+
+            FileBuffer {
+                content: new_buffer as *mut u8,
+                size: 0,
+                capacity: new_capacity,
+                modified: true,
+            }
+        } else {
+            let new_capacity = file_size + 4096; // Add some extra space
+            let prot = PROT_READ | PROT_WRITE;
+            let flags = MAP_PRIVATE;
+            let Ok(new_buffer) = mmap(0, new_capacity, prot, flags, fd, 0) else {
+                return Err(EditorError::MMapFile);
+            };
+
+            FileBuffer {
+                content: new_buffer as *mut u8,
+                size: file_size,
+                capacity: new_capacity,
+                modified: true,
+            }
+        }
     };
-    Ok(FileBuffer::load_from_mmap(addr, size)?)
+    Ok(buffer)
 }
 
 #[cfg(not(tarpaulin_include))]
@@ -1379,83 +1347,6 @@ pub mod tests {
     }
 
     // Tests for FileBuffer functions
-    #[test]
-    fn test_file_buffer_load_from_mmap() {
-        use crate::syscall::{MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
-
-        // Test with empty parameters (should create a new empty buffer)
-        let empty_result = FileBuffer::load_from_mmap(0, 0);
-        assert!(
-            empty_result.is_ok(),
-            "Should successfully create empty buffer"
-        );
-
-        if let Ok(buffer) = empty_result {
-            assert!(!buffer.content.is_null(), "Should allocate a valid buffer");
-            assert_eq!(buffer.size, 0, "Size should be 0 for empty buffer");
-            assert_eq!(
-                buffer.capacity, 4096,
-                "Capacity should be one page (4096 bytes)"
-            );
-            assert!(
-                buffer.modified,
-                "New empty buffer should be marked as modified"
-            );
-        }
-
-        // Create a test buffer through mmap for existing content test
-        let test_size = 100;
-        let prot = PROT_READ | PROT_WRITE;
-        let flags = MAP_PRIVATE | MAP_ANONYMOUS;
-        let Ok(addr) = crate::syscall::mmap(0, test_size, prot, flags, usize::MAX, 0) else {
-            panic!("Failed to allocate test buffer: mmap operation failed");
-        };
-
-        // Fill the buffer with some test data
-        unsafe {
-            for i in 0..test_size {
-                *((addr as *mut u8).add(i)) = u8::try_from(i % 256).unwrap();
-            }
-        }
-
-        // Test with valid parameters
-        let result = FileBuffer::load_from_mmap(addr, test_size);
-        assert!(
-            result.is_ok(),
-            "Should successfully create FileBuffer with valid parameters"
-        );
-
-        if let Ok(buffer) = result {
-            assert_ne!(
-                buffer.content as usize, addr,
-                "Content pointer should be new allocation, not original address"
-            );
-            assert_eq!(buffer.size, test_size, "Size should match provided size");
-            assert!(
-                buffer.capacity >= test_size,
-                "Capacity should be at least the test size"
-            );
-            assert!(
-                !buffer.modified,
-                "Buffer should not be marked as modified initially"
-            );
-
-            // Verify content was copied correctly
-            unsafe {
-                for i in 0..test_size {
-                    assert_eq!(
-                        *buffer.content.add(i),
-                        u8::try_from(i % 256).unwrap(),
-                        "Content should be copied correctly"
-                    );
-                }
-            }
-
-            // Clean up test allocation (buffer will clean up its own allocation)
-            let _ = crate::syscall::munmap(addr, test_size);
-        }
-    }
-
     #[test]
     fn test_file_buffer_with_content() {
         // Create a test file with known content for testing FileBuffer functions
