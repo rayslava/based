@@ -7,7 +7,7 @@ all: release
 # See https://github.com/rust-lang/compiler-builtins/issues/361#issuecomment-1011559018
 release:
 	RUSTFLAGS=$(RELEASE_FLAGS) cargo build --target x86_64-unknown-linux-gnu --release
-	objcopy --remove-section=.eh_frame --remove-section=.shstrtab --remove-section=.comment target/x86_64-unknown-linux-gnu/release/based based
+	objcopy --remove-section=.shstrtab --remove-section=.comment target/x86_64-unknown-linux-gnu/release/based based
 
 test:
 	cargo nextest run

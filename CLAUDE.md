@@ -32,6 +32,8 @@ and no libc is used either. Only Linux syscalls.
   use types from there, do not write code using such types.
 - It is possible to use `std` in test module though. But only inside the test
   module and nowhere else.
+- Write all the code in a statement-oriented style.
+- Run `make test` after finishing changes to check that tests still pass.
 
 # Build process
 
