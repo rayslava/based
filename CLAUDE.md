@@ -28,6 +28,8 @@ and no libc is used either. Only Linux syscalls.
   is not required.
 - Do not ever implement `memset` or `memcpy` or other functions from this list,
   rework the code so they're not needed.
+- Use the `make size` command to check that release build succeeds and does not
+  increase resulting file dramatically.
 - Under any circumstances do not use or import `std` and `core` crates. Do not
   use types from there, do not write code using such types.
 - It is possible to use `std` in test module though. But only inside the test

@@ -57,14 +57,10 @@ fn run() -> Result<(), usize> {
     let mut orig_termios = Termios::new();
 
     if get_termios(syscall::STDIN, &mut orig_termios).is_ok() {
-        // Make a copy for raw mode
-        let mut raw_termios = orig_termios;
-
-        // Set raw mode flags
-        set_raw_mode(&mut raw_termios);
+        set_raw_mode(&mut orig_termios);
 
         // Apply raw mode
-        if set_termios(syscall::STDIN, TCSETS, &raw_termios).is_ok() {
+        if set_termios(syscall::STDIN, TCSETS, &orig_termios).is_ok() {
             puts("Entered raw mode. Press q to exit.\r\n")?;
             puts("Opening file.txt with mmap and displaying its contents.\r\n")?;
 

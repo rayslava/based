@@ -26,7 +26,7 @@ pub const VTIME: usize = 5;
 
 // Window size structure
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub struct Winsize {
     pub rows: u16,
     pub cols: u16,
@@ -55,7 +55,7 @@ impl Winsize {
 
 // Termios structure
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub struct Termios {
     pub iflag: u32,   // Input modes
     pub oflag: u32,   // Output modes
