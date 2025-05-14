@@ -1,11 +1,10 @@
 use crate::syscall::{
     MAP_PRIVATE, O_RDONLY, PROT_READ, SEEK_END, SEEK_SET, STDIN, STDOUT, SysResult, close, lseek,
-    mmap, open, putchar, read, write_unchecked,
+    mmap, open, putchar, puts, read, write_unchecked,
 };
 use crate::terminal::{
     clear_line, clear_screen, enter_alternate_screen, exit_alternate_screen, get_winsize,
-    move_cursor, print_error, print_message, reset_colors, set_bg_color, set_fg_color,
-    write_usize_to_buf,
+    move_cursor, reset_colors, set_bg_color, set_bold, set_fg_color, write_usize_to_buf,
 };
 use crate::{
     syscall::write_buf,
@@ -363,68 +362,6 @@ struct EditorState {
     buffer: FileBuffer,
 }
 
-fn draw_status_bar(state: &EditorState) -> SysResult {
-    // Make sure we have at least 3 rows (1 for status bar, 1 for message line, and 1+ for editing)
-    let winsize = state.winsize;
-
-    if winsize.rows < 3 {
-        return Ok(0);
-    }
-
-    // Save cursor position
-    save_cursor()?;
-
-    // Move to status bar line (second to last row)
-    move_cursor(winsize.rows as usize - 2, 0)?;
-
-    // Set colors for status bar (white text on blue background)
-    set_bg_color(7)?;
-    set_fg_color(0)?;
-
-    // Initial status message - this has the cursor position
-    let mut initial_msg = [0u8; 64];
-    let mut pos = 0;
-
-    // Add cursor position text
-    let text = b" ROW: ";
-    for &b in text {
-        initial_msg[pos] = b;
-        pos += 1;
-    }
-
-    // Add row number
-    pos += write_usize_to_buf(&mut initial_msg[pos..], state.file_row);
-
-    // Add column text
-    let text = b", COL: ";
-    for &b in text {
-        initial_msg[pos] = b;
-        pos += 1;
-    }
-
-    // Add column number
-    pos += write_usize_to_buf(&mut initial_msg[pos..], state.file_col);
-
-    // Add trailing space
-    initial_msg[pos] = b' ';
-    pos += 1;
-
-    // Write the initial status message
-    write_buf(&initial_msg[0..pos])?;
-
-    write_buf(&state.filename)?;
-
-    // Clear to the end of line (makes sure status bar fills whole width)
-    // ESC [ K - Clear from cursor to end of line
-    clear_line()?;
-
-    // Reset colors
-    reset_colors()?;
-
-    // Restore cursor position
-    restore_cursor()
-}
-
 impl EditorState {
     // Create a new editor state
     fn new(winsize: Winsize, filename: &[u8; 64]) -> Self {
@@ -607,98 +544,202 @@ impl EditorState {
         // Update cursor position based on scroll
         self.cursor_row = self.file_row - self.scroll_row;
     }
-}
 
-fn draw_screen(state: &EditorState) -> SysResult {
-    // Calculate available height for content
-    let available_rows = state.editing_rows();
-    // Convert to usize for iterator
-    let line_count = state.buffer.count_lines();
+    fn draw_status_bar(&self) -> SysResult {
+        // Make sure we have at least 3 rows (1 for status bar, 1 for message line, and 1+ for editing)
+        let winsize = self.winsize;
 
-    // Draw lines from the file buffer
-    // Using a manually bounded loop to avoid clippy warnings
-    for i in 0..available_rows {
-        // Position cursor at start of each line
-        // We know i < available_rows_usize which came from a u16, so we can safely convert back
-        move_cursor(i, 0)?;
-
-        clear_line()?;
-        let file_line_idx = state.scroll_row + i;
-
-        if file_line_idx >= line_count {
-            // We're past the end of file, leave the rest of screen empty
-            continue;
+        if winsize.rows < 3 {
+            return Ok(0);
         }
 
-        // Get the line from file buffer
-        if let Some(line) = state.buffer.get_line(file_line_idx) {
-            if line.is_empty() {
+        // Save cursor position
+        save_cursor()?;
+
+        // Move to status bar line (second to last row)
+        move_cursor(winsize.rows as usize - 2, 0)?;
+
+        // Set colors for status bar (white text on blue background)
+        set_bg_color(7)?;
+        set_fg_color(0)?;
+
+        // Initial status message - this has the cursor position
+        let mut initial_msg = [0u8; 64];
+        let mut pos = 0;
+
+        // Add cursor position text
+        let text = b" ROW: ";
+        for &b in text {
+            initial_msg[pos] = b;
+            pos += 1;
+        }
+
+        // Add row number
+        pos += write_usize_to_buf(&mut initial_msg[pos..], self.file_row);
+
+        // Add column text
+        let text = b", COL: ";
+        for &b in text {
+            initial_msg[pos] = b;
+            pos += 1;
+        }
+
+        // Add column number
+        pos += write_usize_to_buf(&mut initial_msg[pos..], self.file_col);
+
+        // Add trailing space
+        initial_msg[pos] = b' ';
+        pos += 1;
+
+        // Write the initial status message
+        write_buf(&initial_msg[0..pos])?;
+
+        write_buf(&self.filename)?;
+
+        // Mark buffer as modified
+        if self.buffer.is_modified() {
+            puts("*")?;
+        }
+
+        // Clear to the end of line (makes sure status bar fills whole width)
+        // ESC [ K - Clear from cursor to end of line
+        clear_line()?;
+
+        // Reset colors
+        reset_colors()?;
+
+        // Restore cursor position
+        restore_cursor()
+    }
+
+    fn draw_screen(&self) -> SysResult {
+        // Calculate available height for content
+        let available_rows = self.editing_rows();
+        // Convert to usize for iterator
+        let line_count = self.buffer.count_lines();
+
+        // Draw lines from the file buffer
+        // Using a manually bounded loop to avoid clippy warnings
+        for i in 0..available_rows {
+            // Position cursor at start of each line
+            // We know i < available_rows_usize which came from a u16, so we can safely convert back
+            move_cursor(i, 0)?;
+
+            clear_line()?;
+            let file_line_idx = self.scroll_row + i;
+
+            if file_line_idx >= line_count {
+                // We're past the end of file, leave the rest of screen empty
                 continue;
             }
 
-            // Calculate how much to skip from the start (for horizontal scrolling)
-            let mut chars_to_skip = state.scroll_col;
-            let mut col = 0;
-            let mut screen_col = 0;
-
-            // Display each character in the line
-            for &byte in line {
-                if byte == 0 {
-                    // Stop at null byte
-                    break;
+            // Get the line from file buffer
+            if let Some(line) = self.buffer.get_line(file_line_idx) {
+                if line.is_empty() {
+                    continue;
                 }
 
-                if byte == b'\t' {
-                    // Handle tabs - convert to spaces
-                    let spaces = state.tab_size - (col % state.tab_size);
-                    col += spaces;
+                // Calculate how much to skip from the start (for horizontal scrolling)
+                let mut chars_to_skip = self.scroll_col;
+                let mut col = 0;
+                let mut screen_col = 0;
 
-                    // Skip if we're still scrolled horizontally
-                    if chars_to_skip > 0 {
-                        if chars_to_skip >= spaces {
-                            chars_to_skip -= spaces;
+                // Display each character in the line
+                for &byte in line {
+                    if byte == 0 {
+                        // Stop at null byte
+                        break;
+                    }
+
+                    if byte == b'\t' {
+                        // Handle tabs - convert to spaces
+                        let spaces = self.tab_size - (col % self.tab_size);
+                        col += spaces;
+
+                        // Skip if we're still scrolled horizontally
+                        if chars_to_skip > 0 {
+                            if chars_to_skip >= spaces {
+                                chars_to_skip -= spaces;
+                            } else {
+                                // Draw partial spaces after the horizontal scroll point
+                                let visible_spaces = spaces - chars_to_skip;
+                                for _ in 0..visible_spaces {
+                                    if screen_col < self.winsize.cols as usize {
+                                        putchar(b' ')?;
+                                        screen_col += 1;
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                chars_to_skip = 0;
+                            }
                         } else {
-                            // Draw partial spaces after the horizontal scroll point
-                            let visible_spaces = spaces - chars_to_skip;
-                            for _ in 0..visible_spaces {
-                                if screen_col < state.winsize.cols as usize {
+                            // Draw spaces for tab
+                            for _ in 0..spaces {
+                                if screen_col < self.winsize.cols as usize {
                                     putchar(b' ')?;
                                     screen_col += 1;
                                 } else {
                                     break;
                                 }
                             }
-                            chars_to_skip = 0;
                         }
                     } else {
-                        // Draw spaces for tab
-                        for _ in 0..spaces {
-                            if screen_col < state.winsize.cols as usize {
-                                putchar(b' ')?;
-                                screen_col += 1;
-                            } else {
-                                break;
-                            }
-                        }
-                    }
-                } else {
-                    col += 1;
+                        col += 1;
 
-                    // Only print if we've scrolled past the horizontal skip point
-                    if chars_to_skip > 0 {
-                        chars_to_skip -= 1;
-                    } else if screen_col < state.winsize.cols as usize {
-                        putchar(byte)?;
-                        screen_col += 1;
-                    } else {
-                        break;
+                        // Only print if we've scrolled past the horizontal skip point
+                        if chars_to_skip > 0 {
+                            chars_to_skip -= 1;
+                        } else if screen_col < self.winsize.cols as usize {
+                            putchar(byte)?;
+                            screen_col += 1;
+                        } else {
+                            break;
+                        }
                     }
                 }
             }
         }
+        move_cursor(self.cursor_row, self.cursor_col)?;
+        Ok(0)
     }
-    move_cursor(state.cursor_row, state.cursor_col)?;
-    Ok(0)
+
+    // Print a message to the last line of the screen
+    fn print_status<F>(&self, writer: F) -> SysResult
+    where
+        F: FnOnce() -> SysResult,
+    {
+        save_cursor()?;
+        move_cursor(self.winsize.rows as usize - 1, 0)?;
+        clear_line()?;
+        writer()?;
+        restore_cursor()
+    }
+
+    // Print a normal message to the status line
+    fn print_message(&self, msg: &str) -> SysResult {
+        self.print_status(|| puts(msg))
+    }
+
+    #[allow(dead_code)]
+    // Print a warning message (yellow) to the status line
+    fn print_warning(&self, msg: &str) -> SysResult {
+        self.print_status(|| {
+            set_fg_color(3)?;
+            puts(msg)?;
+            reset_colors()
+        })
+    }
+
+    // Print an error message (bold red) to the status line
+    fn print_error(&self, msg: &str) -> SysResult {
+        self.print_status(|| {
+            set_bold()?;
+            set_fg_color(1)?;
+            puts(msg)?;
+            reset_colors()
+        })
+    }
 }
 
 // Function to read one character
@@ -973,13 +1014,10 @@ fn process_cursor_key(key: Key, state: &mut EditorState) -> SysResult {
         Key::Enter => {
             // Insert a newline at the current cursor position
             if let Err(e) = state.buffer.insert_newline(state.file_row, state.file_col) {
-                print_error(
-                    state.winsize,
-                    match e {
-                        FileBufferError::BufferFull => "Buffer is full",
-                        _ => "Failed to insert newline",
-                    },
-                )?;
+                state.print_error(match e {
+                    FileBufferError::BufferFull => "Buffer is full",
+                    _ => "Failed to insert newline",
+                })?;
                 return Ok(0);
             }
 
@@ -992,13 +1030,10 @@ fn process_cursor_key(key: Key, state: &mut EditorState) -> SysResult {
             if state.file_col > 0 || state.file_row > 0 {
                 // Try to delete the character
                 if let Err(e) = state.buffer.backspace_at(state.file_row, state.file_col) {
-                    print_error(
-                        state.winsize,
-                        match e {
-                            FileBufferError::InvalidOperation => "Can't delete at this position",
-                            _ => "Error deleting character",
-                        },
-                    )?;
+                    state.print_error(match e {
+                        FileBufferError::InvalidOperation => "Can't delete at this position",
+                        _ => "Error deleting character",
+                    })?;
                     return Ok(0);
                 }
 
@@ -1021,13 +1056,10 @@ fn process_cursor_key(key: Key, state: &mut EditorState) -> SysResult {
             if state.file_col < current_line_len {
                 // Normal case - delete character at cursor in the same line
                 if let Err(e) = state.buffer.delete_char(state.file_row, state.file_col) {
-                    print_error(
-                        state.winsize,
-                        match e {
-                            FileBufferError::InvalidOperation => "Can't delete at this position",
-                            _ => "Error deleting character",
-                        },
-                    )?;
+                    state.print_error(match e {
+                        FileBufferError::InvalidOperation => "Can't delete at this position",
+                        _ => "Error deleting character",
+                    })?;
                     return Ok(0);
                 }
                 // Cursor position stays the same
@@ -1035,13 +1067,10 @@ fn process_cursor_key(key: Key, state: &mut EditorState) -> SysResult {
                 // At end of line - join with next line by deleting the newline
                 if let Some(line_end) = state.buffer.find_line_end(state.file_row) {
                     if let Err(e) = state.buffer.delete_at_position(line_end) {
-                        print_error(
-                            state.winsize,
-                            match e {
-                                FileBufferError::InvalidOperation => "Can't join lines",
-                                _ => "Error deleting newline",
-                            },
-                        )?;
+                        state.print_error(match e {
+                            FileBufferError::InvalidOperation => "Can't join lines",
+                            _ => "Error deleting newline",
+                        })?;
                         return Ok(0);
                     }
                     // Cursor stays at same position (now in middle of joined line)
@@ -1051,13 +1080,10 @@ fn process_cursor_key(key: Key, state: &mut EditorState) -> SysResult {
         Key::Char(ch) => {
             // Insert the character at the current cursor position
             if let Err(e) = state.buffer.insert_char(state.file_row, state.file_col, ch) {
-                print_error(
-                    state.winsize,
-                    match e {
-                        FileBufferError::BufferFull => "Buffer is full",
-                        _ => "Failed to insert character",
-                    },
-                )?;
+                state.print_error(match e {
+                    FileBufferError::BufferFull => "Buffer is full",
+                    _ => "Failed to insert character",
+                })?;
                 return Ok(0);
             }
 
@@ -1068,14 +1094,14 @@ fn process_cursor_key(key: Key, state: &mut EditorState) -> SysResult {
     }
 
     state.scroll_to_cursor();
-    draw_screen(state)
+    state.draw_screen()
 }
 
 #[cfg(not(tarpaulin_include))]
 fn handle_open_file(state: &mut EditorState) -> Result<(), EditorError> {
     save_cursor()?;
     let prompt: &str = "Enter filename: ";
-    print_message(state.winsize, prompt)?;
+    state.print_message(prompt)?;
     move_cursor(state.winsize.rows as usize - 1, prompt.len())?;
 
     let mut filename = [0u8; 64];
@@ -1115,14 +1141,14 @@ fn handle_open_file(state: &mut EditorState) -> Result<(), EditorError> {
             state.buffer = new_buffer;
 
             clear_screen()?;
-            draw_screen(state)?;
-            print_message(state.winsize, "File opened successfully")?;
+            state.draw_screen()?;
+            state.print_message("File opened successfully")?;
             move_cursor(0, 0)?;
             state.filename[..filename.len()].copy_from_slice(&filename);
             Ok(())
         }
         Err(e) => {
-            print_error(state.winsize, "Error: Failed to open file")?;
+            state.print_error("Error: Failed to open file")?;
             Err(e)
         }
     }
@@ -1131,9 +1157,9 @@ fn handle_open_file(state: &mut EditorState) -> Result<(), EditorError> {
 // Handle saving the file
 fn handle_save_file(state: &mut EditorState) -> SysResult {
     match state.buffer.save_to_file(&state.filename) {
-        Ok(_) => Ok(print_message(state.winsize, "File saved successfully")?),
+        Ok(_) => Ok(state.print_message("File saved successfully")?),
         Err(e) => {
-            print_error(state.winsize, "Error saving file")?;
+            state.print_error("Error saving file")?;
             Err(e)
         }
     }
@@ -1162,24 +1188,25 @@ pub fn run_editor() -> Result<(), EditorError> {
     let file_buffer = match open_file(file_path) {
         Ok(file_buffer) => file_buffer,
         Err(e) => {
-            print_error(winsize, "Error: Failed to open file")?;
+            state.print_error("Error: Failed to open file")?;
             return Err(e);
         }
     };
     state.buffer = file_buffer;
 
-    draw_screen(&state)?;
-    draw_status_bar(&state)?;
-    print_message(winsize, "File opened successfully")?;
+    state.draw_screen()?;
+    state.draw_status_bar()?;
+    state.print_message("File opened successfully")?;
 
     let mut running = true;
     while running {
         if let Some(key) = read_key() {
+            state.print_message("")?;
             match key {
                 Key::Quit => running = false,
                 Key::Refresh => {
                     clear_screen()?;
-                    draw_screen(&state)?;
+                    state.draw_screen()?;
                 }
                 Key::OpenFile => {
                     let _ = handle_open_file(&mut state);
@@ -1205,20 +1232,7 @@ pub fn run_editor() -> Result<(), EditorError> {
                 }
             }
         }
-
-        // Update status bar with edit status
-        let status = if state.buffer.is_modified() {
-            "Modified"
-        } else {
-            "Saved"
-        };
-        draw_status_bar(&state)?;
-
-        // Display file status in bottom line
-        move_cursor(state.winsize.rows as usize - 1, 0)?;
-        clear_line()?;
-        write_buf(status.as_bytes())?;
-
+        state.draw_status_bar()?;
         // Move cursor back to editing position
         move_cursor(state.cursor_row, state.cursor_col)?;
     }
@@ -1337,13 +1351,8 @@ pub mod tests {
         let save_result = save_cursor();
         assert!(save_result.is_ok(), "save_cursor should work in test mode");
 
-        let message_result = print_message(winsize, "Test message");
-        assert!(
-            message_result.is_ok(),
-            "print_message should work in test mode"
-        );
-
-        // Verify that we can move the cursor as handle_open_file would
+        // Since print_message is now a method on EditorState, we can't directly test it here
+        // Let's verify that we can move the cursor as handle_open_file would
         let move_result = move_cursor(winsize.rows as usize - 1, 14); // "Enter filename: ".len()
         assert!(move_result.is_ok(), "move_cursor should work in test mode");
 
@@ -2872,5 +2881,59 @@ pub mod tests {
         // Clean up
         let _ = crate::syscall::munmap(buffer.content as usize, buffer.capacity);
         std::fs::remove_file("test_edit_save_file.txt").expect("Failed to clean up test file");
+    }
+
+    #[test]
+    fn test_editor_status_functions() {
+        use crate::terminal::tests::{disable_test_mode, enable_test_mode};
+
+        // Create a test editor state
+        let mut winsize = Winsize::new();
+        winsize.rows = 24;
+        winsize.cols = 80;
+
+        let state = EditorState::new(winsize, &[0; 64]);
+
+        // Test print_message
+        enable_test_mode();
+        let result = state.print_message("Test normal message");
+
+        unsafe {
+            assert!(result.is_ok(), "print_message should work in test mode");
+            assert!(crate::terminal::tests::TEST_BUFFER_LEN > 0);
+            assert_eq!(crate::terminal::tests::TEST_BUFFER[0], b'\x1b');
+        }
+
+        // Test print_warning
+        enable_test_mode();
+        let result = state.print_warning("Test warning message");
+
+        unsafe {
+            assert!(result.is_ok(), "print_warning should work in test mode");
+            assert!(crate::terminal::tests::TEST_BUFFER_LEN > 0);
+            assert_eq!(crate::terminal::tests::TEST_BUFFER[0], b'\x1b');
+        }
+
+        // Test print_error
+        enable_test_mode();
+        let result = state.print_error("Test error message");
+
+        unsafe {
+            assert!(result.is_ok(), "print_error should work in test mode");
+            assert!(crate::terminal::tests::TEST_BUFFER_LEN > 0);
+            assert_eq!(crate::terminal::tests::TEST_BUFFER[0], b'\x1b');
+        }
+
+        // Test print_status
+        enable_test_mode();
+        let result = state.print_status(|| puts("Test status message"));
+
+        unsafe {
+            assert!(result.is_ok(), "print_status should work in test mode");
+            assert!(crate::terminal::tests::TEST_BUFFER_LEN > 0);
+            assert_eq!(crate::terminal::tests::TEST_BUFFER[0], b'\x1b');
+        }
+
+        disable_test_mode();
     }
 }
