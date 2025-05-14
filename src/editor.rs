@@ -389,28 +389,25 @@ impl SearchState {
         start_col: usize,
     ) -> Option<(usize, usize, usize)> {
         if self.query_len == 0 {
-            return None; // Nothing to search for
+            return None;
         }
 
         let query = &self.query[..self.query_len];
         let line_count = buffer.count_lines();
 
-        // Start from the current line and position
+        // Search from current position to end of file
         let mut row = start_row;
-        let mut col = start_col;
+        let mut start_idx = start_col;
 
         while row < line_count {
             if let Some(line) = buffer.get_line(row) {
-                // Start search from current column on first line, from column 0 on subsequent lines
-                let start_idx = if row == start_row { col } else { 0 };
-
-                // If there's room for the query in this line from the starting position
+                // Only search if query can fit in remaining line
                 if start_idx + self.query_len <= line.len() {
-                    // Check for match at each position
-                    for i in start_idx..=(line.len() - self.query_len) {
+                    // Check for matches in current line
+                    for i in start_idx..=line.len() - self.query_len {
                         let mut match_found = true;
 
-                        // Compare each character
+                        // Compare query with substring at position i
                         for j in 0..self.query_len {
                             if line[i + j] != query[j] {
                                 match_found = false;
@@ -427,26 +424,26 @@ impl SearchState {
 
             // Move to next line
             row += 1;
-            col = 0;
+            start_idx = 0;
         }
 
-        // Wrap around to the beginning of the file if no match found
-        for row in 0..=start_row {
+        // Wrap around to beginning of file
+        row = 0;
+        while row <= start_row {
             if let Some(line) = buffer.get_line(row) {
-                // Search only up to the starting column on the starting row
                 let end_idx = if row == start_row {
                     start_col
                 } else {
                     line.len()
                 };
 
-                // If there's room for the query on this line
+                // Only search if query can fit in line
                 if self.query_len <= end_idx {
-                    // Check for match at each position
-                    for i in 0..=(end_idx - self.query_len) {
+                    // Check for matches up to end_idx
+                    for i in 0..=end_idx - self.query_len {
                         let mut match_found = true;
 
-                        // Compare each character
+                        // Compare query with substring at position i
                         for j in 0..self.query_len {
                             if line[i + j] != query[j] {
                                 match_found = false;
@@ -460,9 +457,11 @@ impl SearchState {
                     }
                 }
             }
+
+            row += 1;
         }
 
-        None // No match found
+        None
     }
 
     // Find a substring in the buffer from the current position, searching backward
@@ -472,95 +471,175 @@ impl SearchState {
         start_row: usize,
         start_col: usize,
     ) -> Option<(usize, usize, usize)> {
+        // Initialize the result to None
+        let mut result = None;
+
+        // Early exit if query is empty
         if self.query_len == 0 {
-            return None; // Nothing to search for
+            return result;
         }
 
         let query = &self.query[..self.query_len];
         let line_count = buffer.count_lines();
+
         // Start from the current line and position, searching backward
         let mut row = start_row;
         let mut col = start_col;
+        let mut found = false;
 
-        // Search from current line backward
-        while row > 0 || (row == 0 && col > 0) {
-            if let Some(line) = buffer.get_line(row) {
-                // On the first iteration, search from col backward
+        // First attempt: search from current position backward to beginning
+        let mut at_beginning = false;
+        while (row > 0 || (row == 0 && col > 0)) && !found && !at_beginning {
+            let line_opt = buffer.get_line(row);
+
+            if line_opt.is_some() {
+                let line = line_opt.unwrap();
+
+                // On first iteration, search from col backward
                 // On subsequent iterations, search from end of line backward
                 let search_end = if row == start_row { col } else { line.len() };
 
-                // If there's room for the query in this line
+                // Check if there's room for the query in this line
                 if self.query_len <= search_end {
-                    // Check for match at each position, going backward
-                    for i in (0..=(search_end - self.query_len)).rev() {
-                        let mut match_found = true;
-
-                        // Compare each character with bounds check
-                        for j in 0..self.query_len {
-                            if i + j >= line.len() || line[i + j] != query[j] {
-                                match_found = false;
-                                break;
-                            }
-                        }
-
-                        if match_found {
-                            return Some((row, i, self.query_len));
-                        }
-                    }
-                }
-            }
-
-            // Move to previous line
-            if row > 0 {
-                row -= 1;
-                // Get the length of the previous line for next iteration
-                if let Some(prev_line) = buffer.get_line(row) {
-                    col = prev_line.len();
-                } else {
-                    col = 0;
-                }
-            } else {
-                break; // We're at the beginning of the file
-            }
-        }
-
-        // Wrap around to the end of the file if no match found
-        for row in (start_row..line_count).rev() {
-            if let Some(line) = buffer.get_line(row) {
-                // On the first wrapped iteration, only search after start_col
-                let search_start = if row == start_row {
-                    if start_col + 1 < line.len() {
-                        start_col + 1
+                    // Determine the starting position for backward search
+                    let mut i = search_end;
+                    if i >= self.query_len {
+                        i -= self.query_len;
                     } else {
-                        line.len()
+                        // No room for search at the current position
+                        continue;
                     }
-                } else {
-                    0
-                };
 
-                // If there's room for the query on this line
-                if search_start + self.query_len <= line.len() {
-                    // Check for match at each position, going backward from the end
-                    for i in (search_start..=(line.len() - self.query_len)).rev() {
+                    // Search backward through the line
+                    let mut done = false;
+                    while !done && !found && i <= search_end - self.query_len {
                         let mut match_found = true;
 
                         // Compare each character with bounds check
-                        for j in 0..self.query_len {
+                        let mut j = 0;
+                        while j < self.query_len && match_found {
                             if i + j >= line.len() || line[i + j] != query[j] {
                                 match_found = false;
-                                break;
                             }
+                            j += 1;
                         }
 
+                        // If match is found, capture the result
                         if match_found {
-                            return Some((row, i, self.query_len));
+                            result = Some((row, i, self.query_len));
+                            found = true;
+                        }
+
+                        // Move to previous position or exit loop
+                        if i > 0 && !found {
+                            i -= 1;
+                        } else {
+                            done = true;
                         }
                     }
                 }
             }
+
+            // Move to previous line if no match found
+            if !found {
+                if row > 0 {
+                    row -= 1;
+                    // Get the length of the previous line
+                    let prev_line_opt = buffer.get_line(row);
+                    if prev_line_opt.is_some() {
+                        col = prev_line_opt.unwrap().len();
+                    } else {
+                        col = 0;
+                    }
+                } else {
+                    at_beginning = true; // We're at the beginning of the file
+                }
+            }
         }
 
-        None // No match found
+        // If no match found, wrap around to the end
+        if !found {
+            // Start from the last line of the file
+            let mut row_index = line_count;
+            row_index = row_index.saturating_sub(1);
+
+            // Search backward from the last line to the start line
+            while row_index >= start_row && !found {
+                let line_opt = buffer.get_line(row_index);
+
+                if line_opt.is_some() {
+                    let line = line_opt.unwrap();
+
+                    // On first wrapped iteration, only search after start_col
+                    let mut search_start = 0;
+                    if row_index == start_row {
+                        if start_col + 1 < line.len() {
+                            search_start = start_col + 1;
+                        } else {
+                            search_start = if line.is_empty() { 0 } else { line.len() - 1 };
+                        }
+                    }
+
+                    // Check if there's room for the query
+                    if search_start + self.query_len <= line.len() {
+                        // Determine the starting position for backward search
+                        let mut i = line.len();
+                        if i >= self.query_len {
+                            i -= self.query_len;
+                        } else {
+                            // Move to previous line, no room here
+                            if row_index > 0 {
+                                row_index -= 1;
+                            } else {
+                                break;
+                            }
+                            continue;
+                        }
+
+                        // Search backward through the line
+                        let mut done = false;
+                        while !done && !found {
+                            // Don't go below search_start
+                            if i >= search_start {
+                                let mut match_found = true;
+
+                                // Compare each character with bounds check
+                                let mut j = 0;
+                                while j < self.query_len && match_found {
+                                    if i + j >= line.len() || line[i + j] != query[j] {
+                                        match_found = false;
+                                    }
+                                    j += 1;
+                                }
+
+                                // If match is found, capture the result
+                                if match_found {
+                                    result = Some((row_index, i, self.query_len));
+                                    found = true;
+                                }
+
+                                // Move to previous position or exit
+                                if i > search_start && !found {
+                                    i -= 1;
+                                } else {
+                                    done = true;
+                                }
+                            } else {
+                                done = true;
+                            }
+                        }
+                    }
+                }
+
+                // Exit if we're at the beginning or found match
+                if row_index == 0 || found {
+                    break;
+                }
+                row_index -= 1;
+            }
+        }
+
+        result
     }
 }
 
@@ -615,11 +694,16 @@ impl EditorState {
         self.search.reverse = reverse;
         self.search.query_len = 0;
         self.search.match_len = 0; // Reset match length
-        for i in 0..self.search.query.len() {
+
+        // Clear the query array
+        let mut i = 0;
+        while i < self.search.query.len() {
             self.search.query[i] = 0;
+            i += 1;
         }
 
         // Show search prompt with appropriate direction indicator
+
         if reverse {
             self.print_message("Reverse search: ")
         } else {
@@ -652,31 +736,45 @@ impl EditorState {
 
     // Update search when query changes
     fn update_search(&mut self) -> SysResult {
+        // Initialize result to Ok(0), will be updated if needed
+        let mut result = Ok(0);
+
+        // Only continue if the search query is not empty
         if self.search.query_len > 0 {
+            // Flag to track if a match is found
+            let mut match_found = false;
+
             // First check if current position still matches the updated query
             if self.search.match_len > 0 {
-                // Check if we have a current match position
-                let current_match_valid = if let Some(line) = self.buffer.get_line(self.file_row) {
-                    // Check if the line is long enough and we're at a valid position
+                // Assume current match is not valid initially
+                let mut current_match_valid = false;
+
+                // Get the current line to check if it still matches the query
+                let line_option = self.buffer.get_line(self.file_row);
+
+                if line_option.is_some() {
+                    let line = line_option.unwrap();
+
+                    // Check if the line is long enough for the query
                     if self.file_col + self.search.query_len <= line.len() {
                         let query = &self.search.query[..self.search.query_len];
-                        let mut still_matches = true;
+
+                        // Start by assuming the match is valid
+                        current_match_valid = true;
 
                         // Compare each character with the updated query
-                        for j in 0..self.search.query_len {
-                            if self.file_col + j < line.len() && line[self.file_col + j] != query[j]
+                        let mut j = 0;
+                        while j < self.search.query_len {
+                            if self.file_col + j >= line.len()
+                                || line[self.file_col + j] != query[j]
                             {
-                                still_matches = false;
+                                current_match_valid = false;
                                 break;
                             }
+                            j += 1;
                         }
-                        still_matches
-                    } else {
-                        false
                     }
-                } else {
-                    false
-                };
+                }
 
                 // If current position still matches the updated query, just update match length
                 if current_match_valid {
@@ -684,143 +782,211 @@ impl EditorState {
                     self.search.match_col = self.file_col;
                     self.search.match_len = self.search.query_len;
                     self.draw_screen()?;
-                    return Ok(0);
+                    match_found = true;
                 }
             }
 
             // If current position doesn't match, find a new match
-            let result = if self.search.reverse {
-                self.search
-                    .find_substring_backward(&self.buffer, self.file_row, self.file_col)
-            } else {
-                self.search
-                    .find_substring_forward(&self.buffer, self.file_row, self.file_col)
-            };
+            if !match_found {
+                // Determine search direction and execute search
+                let search_result = if self.search.reverse {
+                    self.search
+                        .find_substring_backward(&self.buffer, self.file_row, self.file_col)
+                } else {
+                    self.search
+                        .find_substring_forward(&self.buffer, self.file_row, self.file_col)
+                };
 
-            if let Some((row, col, len)) = result {
-                // Store match info
-                self.search.match_row = row;
-                self.search.match_col = col;
-                self.search.match_len = len;
+                // Process the search result if a match was found
+                if search_result.is_some() {
+                    let (row, col, len) = search_result.unwrap();
 
-                // Move cursor to match position
-                self.file_row = row;
-                self.file_col = col;
-                self.scroll_to_cursor();
+                    // Store match info
+                    self.search.match_row = row;
+                    self.search.match_col = col;
+                    self.search.match_len = len;
 
-                // Redraw the screen to show the match
-                self.draw_screen()?;
+                    // Move cursor to match position
+                    self.file_row = row;
+                    self.file_col = col;
+                    self.scroll_to_cursor();
 
-                return Ok(0);
+                    // Redraw the screen to show the match
+                    self.draw_screen()?;
+                    match_found = true;
+                }
+
+                // If no match was found, show an error message
+                if !match_found {
+                    result = self.print_error("No match found");
+                }
             }
-            // No match found
-            return self.print_error("No match found");
         }
 
-        Ok(0)
+        result
     }
 
     // Add a character to the search query
     fn add_search_char(&mut self, ch: u8) -> SysResult {
+        // Initialize result
+        let mut result;
+
+        // Check if the query still has space for one more character
         if self.search.query_len < self.search.query.len() - 1 {
             // Add the character to the query
             self.search.query[self.search.query_len] = ch;
             self.search.query_len += 1;
 
             // Update search prompt
-            self.print_status(|| {
-                if self.search.reverse {
-                    puts("Reverse search: ")?;
-                } else {
-                    puts("Search: ")?;
-                }
-                write_unchecked(STDOUT, self.search.query.as_ptr(), self.search.query_len)?;
-                Ok(0)
-            })?;
+            result = self.print_status(|| {
+                let mut inner_result;
 
-            // Find match for the updated query
-            self.update_search()
+                // Display appropriate search prompt based on direction
+                if self.search.reverse {
+                    inner_result = puts("Reverse search: ");
+                } else {
+                    inner_result = puts("Search: ");
+                }
+
+                // Check if prompt was displayed successfully
+                if inner_result.is_ok() {
+                    // Display the query text
+                    inner_result =
+                        write_unchecked(STDOUT, self.search.query.as_ptr(), self.search.query_len);
+                }
+
+                // Return status
+                if inner_result.is_ok() {
+                    inner_result = Ok(0);
+                }
+                inner_result
+            });
+
+            // If status update was successful, search for matches
+            if result.is_ok() {
+                result = self.update_search();
+            }
         } else {
-            // Query too long
-            self.print_error("Search query too long")
+            // Query is too long, show error
+            result = self.print_error("Search query too long");
         }
+
+        result
     }
 
     // Remove the last character from the search query
     fn remove_search_char(&mut self) -> SysResult {
+        // Initialize result to Ok(0), will be updated if needed
+        let mut result = Ok(0);
+
+        // Only proceed if there is at least one character in the query
         if self.search.query_len > 0 {
             // Remove the last character
             self.search.query_len -= 1;
 
             // Update search prompt
-            self.print_status(|| {
-                if self.search.reverse {
-                    puts("Reverse search: ")?;
-                } else {
-                    puts("Search: ")?;
-                }
-                write_unchecked(STDOUT, self.search.query.as_ptr(), self.search.query_len)?;
-                Ok(0)
-            })?;
+            result = self.print_status(|| {
+                let mut inner_result;
 
-            // Find match for the updated query, or clear search if no characters left
-            if self.search.query_len > 0 {
-                // When removing a character, we may need to re-search from scratch
-                // Check if current match needs to be invalidated
-                if self.search.match_len > self.search.query_len {
-                    self.search.match_len = self.search.query_len;
+                // Display appropriate search prompt based on direction
+                if self.search.reverse {
+                    inner_result = puts("Reverse search: ");
+                } else {
+                    inner_result = puts("Search: ");
                 }
-                self.update_search()
-            } else {
-                // Reset cursor to original position if no query
-                self.file_row = self.search.orig_row;
-                self.file_col = self.search.orig_col;
-                self.search.match_len = 0; // No match when query is empty
-                self.scroll_to_cursor();
-                self.draw_screen()
+
+                // Check if prompt was displayed successfully
+                if inner_result.is_ok() {
+                    // Display the query text
+                    inner_result =
+                        write_unchecked(STDOUT, self.search.query.as_ptr(), self.search.query_len);
+                }
+
+                // Return status
+                if inner_result.is_ok() {
+                    inner_result = Ok(0);
+                }
+                inner_result
+            });
+
+            // If status update was successful, process the updated query
+            if result.is_ok() {
+                // Check if there are still characters in the query
+                if self.search.query_len > 0 {
+                    // Adjust match length if needed
+                    if self.search.match_len > self.search.query_len {
+                        self.search.match_len = self.search.query_len;
+                    }
+
+                    // Search for new matches with updated query
+                    result = self.update_search();
+                } else {
+                    // No characters left in query, reset to original position
+                    self.file_row = self.search.orig_row;
+                    self.file_col = self.search.orig_col;
+                    self.search.match_len = 0; // Clear highlights
+
+                    // Update screen display
+                    self.scroll_to_cursor();
+                    result = self.draw_screen();
+                }
             }
-        } else {
-            Ok(0) // Already empty
         }
+
+        result
     }
 
     // Find the next match for the current search query
     fn find_next_match(&mut self) -> SysResult {
+        // Initialize result to Ok(0), will be updated if needed
+        let mut result = Ok(0);
+
+        // Only proceed if there is a query to search for
         if self.search.query_len > 0 {
-            // Start search from the character after/before the current match depending on direction
-            let (search_row, search_col) = if self.search.reverse {
-                // For reverse search, start at the beginning of the current match
+            // Variables to hold the position to start searching from
+            let search_row;
+            let search_col;
+
+            // Determine search starting position based on direction
+            if self.search.reverse {
+                // For reverse search, calculate starting position
                 if self.search.match_col > 0 {
-                    (self.search.match_row, self.search.match_col - 1)
+                    // Start at the position before the current match
+                    search_row = self.search.match_row;
+                    search_col = self.search.match_col - 1;
                 } else if self.search.match_row > 0 {
-                    // Move to the end of the previous line
-                    let prev_row = self.search.match_row - 1;
-                    let prev_line_len = if let Some(line) = self.buffer.get_line(prev_row) {
-                        line.len()
-                    } else {
-                        0
-                    };
-                    (prev_row, prev_line_len)
+                    // We're at the start of a line, so move to the end of previous line
+                    search_row = self.search.match_row - 1;
+                    let mut prev_line_len = 0;
+
+                    // Get the length of the previous line
+                    let prev_line = self.buffer.get_line(search_row);
+                    if prev_line.is_some() {
+                        prev_line_len = prev_line.unwrap().len();
+                    }
+
+                    search_col = prev_line_len;
                 } else {
-                    // We're at the beginning of the file, wrap around
-                    let last_row = self.buffer.count_lines() - 1;
-                    let last_line_len = if let Some(line) = self.buffer.get_line(last_row) {
-                        line.len()
-                    } else {
-                        0
-                    };
-                    (last_row, last_line_len)
+                    // We're at the beginning of the file, wrap around to the end
+                    search_row = self.buffer.count_lines() - 1;
+                    let mut last_line_len = 0;
+
+                    // Get the length of the last line
+                    let last_line = self.buffer.get_line(search_row);
+                    if last_line.is_some() {
+                        last_line_len = last_line.unwrap().len();
+                    }
+
+                    search_col = last_line_len;
                 }
             } else {
                 // For forward search, start after the end of the current match
-                (
-                    self.search.match_row,
-                    self.search.match_col + self.search.match_len,
-                )
-            };
+                search_row = self.search.match_row;
+                search_col = self.search.match_col + self.search.match_len;
+            }
 
-            // Find the next match
-            let result = if self.search.reverse {
+            // Execute the search in the appropriate direction
+            let search_result = if self.search.reverse {
                 self.search
                     .find_substring_backward(&self.buffer, search_row, search_col)
             } else {
@@ -828,26 +994,29 @@ impl EditorState {
                     .find_substring_forward(&self.buffer, search_row, search_col)
             };
 
-            if let Some((row, col, len)) = result {
-                // Store match info
+            // Process the search result
+            if search_result.is_some() {
+                let (row, col, len) = search_result.unwrap();
+
+                // Store the match information
                 self.search.match_row = row;
                 self.search.match_col = col;
                 self.search.match_len = len;
 
-                // Move cursor to match position
+                // Move cursor to the match position
                 self.file_row = row;
                 self.file_col = col;
                 self.scroll_to_cursor();
 
-                // Redraw the screen to show the match
-                self.draw_screen()
+                // Update the display
+                result = self.draw_screen();
             } else {
-                // No more matches
-                self.print_error("No more matches")
+                // No more matches found
+                result = self.print_error("No more matches");
             }
-        } else {
-            Ok(0) // Nothing to search for
         }
+
+        result
     }
 
     // Get the number of rows available for editing (excluding status bars)
