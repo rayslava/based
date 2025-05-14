@@ -4,7 +4,7 @@ use crate::syscall::{
 };
 use crate::terminal::{
     clear_line, clear_screen, enter_alternate_screen, exit_alternate_screen, get_winsize,
-    move_cursor, reset_colors, set_bg_color, set_bold, set_fg_color, write_usize_to_buf,
+    move_cursor, reset_colors, set_bg_color, set_bold, set_fg_color, write_number,
 };
 use crate::{
     syscall::write_buf,
@@ -31,7 +31,8 @@ impl FileBuffer {
     // Insert a character at a specific position
     fn insert_at_position(&mut self, pos: usize, ch: u8) -> Result<(), FileBufferError> {
         if self.size >= self.capacity {
-            return Err(FileBufferError::BufferFull);
+            // Instead of returning an error, resize the buffer
+            self.resize_buffer()?;
         }
 
         if pos > self.size {
@@ -54,6 +55,42 @@ impl FileBuffer {
         // Update size and modified status
         self.size += 1;
         self.modified = true;
+
+        Ok(())
+    }
+
+    // Resize the buffer to accommodate more content
+    fn resize_buffer(&mut self) -> Result<(), FileBufferError> {
+        let new_capacity = if self.capacity == 0 {
+            4096 // Start with one page if buffer is empty
+        } else {
+            // Add a page
+            ((self.capacity + 4095) & !4095) + usize::from(self.capacity % 4096 == 0) * 4096
+        };
+
+        // Allocate new buffer with doubled capacity
+        let prot = crate::syscall::PROT_READ | crate::syscall::PROT_WRITE;
+        let flags = crate::syscall::MAP_PRIVATE | crate::syscall::MAP_ANONYMOUS;
+        let Ok(new_buffer) = crate::syscall::mmap(0, new_capacity, prot, flags, usize::MAX, 0)
+        else {
+            return Err(FileBufferError::BufferFull);
+        };
+
+        // Copy existing content to new buffer
+        unsafe {
+            if !self.content.is_null() && self.size > 0 {
+                for i in 0..self.size {
+                    *((new_buffer as *mut u8).add(i)) = *self.content.add(i);
+                }
+
+                // Free the old buffer
+                let _ = crate::syscall::munmap(self.content as usize, self.capacity);
+            }
+        }
+
+        // Update buffer pointers and capacity
+        self.content = new_buffer as *mut u8;
+        self.capacity = new_capacity;
 
         Ok(())
     }
@@ -212,14 +249,22 @@ impl FileBuffer {
     }
 
     fn find_line_start(&self, line_idx: usize) -> Option<usize> {
-        if self.content.is_null() || self.size == 0 {
+        // For empty files, line 0 is a valid empty line at position 0
+        if self.content.is_null() {
             return None;
         }
 
-        if line_idx == 0 {
+        // Special case for empty buffer - still allow line 0
+        if self.size == 0 && line_idx == 0 {
             return Some(0);
         }
 
+        // Normal case for non-empty buffers
+        if self.size > 0 && line_idx == 0 {
+            return Some(0);
+        }
+
+        // Find other lines by counting newlines
         let mut newlines_found = 0;
         let mut pos = 0;
 
@@ -240,6 +285,11 @@ impl FileBuffer {
     fn find_line_end(&self, line_idx: usize) -> Option<usize> {
         let start = self.find_line_start(line_idx)?;
 
+        // Special case for empty buffer - line 0 ends at position 0
+        if self.size == 0 && line_idx == 0 {
+            return Some(0);
+        }
+
         let mut pos = start;
         while pos < self.size {
             let byte = unsafe { *self.content.add(pos) };
@@ -259,6 +309,15 @@ impl FileBuffer {
         // Find start and end positions of the line
         let start = self.find_line_start(line_idx)?;
         let end = self.find_line_end(line_idx)?;
+
+        // Special case for empty buffer - return empty slice
+        if self.size == 0 && line_idx == 0 {
+            // Create an empty slice - we need to be careful here since content might be null
+            // but we've already checked in find_line_start that it isn't
+            unsafe {
+                return Some(core::slice::from_raw_parts(self.content, 0));
+            }
+        }
 
         if start >= end || start >= self.size || end > self.size {
             return None;
@@ -492,61 +551,35 @@ impl EditorState {
     }
 
     fn draw_status_bar(&self) -> SysResult {
-        // Make sure we have at least 3 rows (1 for status bar, 1 for message line, and 1+ for editing)
         let winsize = self.winsize;
 
         if winsize.rows < 3 {
             return Ok(0);
         }
-
-        // Save cursor position
         save_cursor()?;
-
-        // Move to status bar line (second to last row)
         move_cursor(winsize.rows as usize - 2, 0)?;
-
-        // Set colors for status bar (white text on blue background)
         set_bg_color(7)?;
         set_fg_color(0)?;
 
-        // Initial status message - this has the cursor position
-        let mut initial_msg = [0u8; 64];
-        let mut pos = 0;
-
-        // Add cursor position text
-        let text = b" ROW: ";
-        for &b in text {
-            initial_msg[pos] = b;
-            pos += 1;
-        }
-
-        // Add row number
-        pos += write_usize_to_buf(&mut initial_msg[pos..], self.file_row);
-
-        // Add column text
-        let text = b", COL: ";
-        for &b in text {
-            initial_msg[pos] = b;
-            pos += 1;
-        }
-
-        // Add column number
-        pos += write_usize_to_buf(&mut initial_msg[pos..], self.file_col);
-
-        // Add trailing space
-        initial_msg[pos] = b' ';
-        pos += 1;
-
-        // Write the initial status message
-        write_buf(&initial_msg[0..pos])?;
-
         write_buf(&self.filename)?;
 
-        // Mark buffer as modified
+        // Modified mark
         if self.buffer.is_modified() {
             puts("*")?;
         }
 
+        puts(" L")?;
+        write_number(self.file_row);
+        puts(":")?;
+        write_number(self.file_col);
+
+        #[cfg(debug_assertions)]
+        {
+            puts(" ")?;
+            write_number(self.buffer.size);
+            puts(" ")?;
+            write_number(self.buffer.capacity);
+        }
         // Clear to the end of line (makes sure status bar fills whole width)
         // ESC [ K - Clear from cursor to end of line
         clear_line()?;
@@ -950,7 +983,8 @@ fn open_file(file_path: &[u8]) -> Result<FileBuffer, EditorError> {
                 modified: true,
             }
         } else {
-            let new_capacity = file_size + 4096; // Add some extra space
+            let new_capacity = file_size;
+            // Round up to the next page
             let prot = PROT_READ | PROT_WRITE;
             let flags = MAP_PRIVATE;
             let Ok(new_buffer) = mmap(0, new_capacity, prot, flags, fd, 0) else {
@@ -961,7 +995,7 @@ fn open_file(file_path: &[u8]) -> Result<FileBuffer, EditorError> {
                 content: new_buffer as *mut u8,
                 size: file_size,
                 capacity: new_capacity,
-                modified: true,
+                modified: false,
             }
         }
     };
@@ -1212,6 +1246,71 @@ pub fn run_editor() -> Result<(), EditorError> {
 #[cfg(test)]
 pub mod tests {
     #[cfg(test)]
+    #[test]
+    fn test_file_buffer_resize() {
+        // Create a small buffer with tiny capacity
+        let mut buffer = FileBuffer {
+            content: std::ptr::null_mut(),
+            size: 0,
+            capacity: 5,
+            modified: false,
+        };
+
+        // Allocate memory for the buffer
+        let prot = crate::syscall::PROT_READ | crate::syscall::PROT_WRITE;
+        let flags = crate::syscall::MAP_PRIVATE | crate::syscall::MAP_ANONYMOUS;
+        let Ok(addr) = crate::syscall::mmap(0, buffer.capacity, prot, flags, usize::MAX, 0) else {
+            panic!("Failed to allocate test buffer: mmap error");
+        };
+        buffer.content = addr as *mut u8;
+
+        // Initial state
+        assert_eq!(buffer.capacity, 5, "Initial capacity should be 5");
+
+        // Fill the buffer to capacity
+        for i in 0..5 {
+            let result = buffer.insert_at_position(i, b'A' + u8::try_from(i).unwrap());
+            assert!(result.is_ok(), "Should successfully insert character");
+        }
+
+        assert_eq!(buffer.size, 5, "Size should be 5 after insertions");
+
+        // This insertion would fail without resizing
+        let result = buffer.insert_at_position(5, b'F');
+        assert!(
+            result.is_ok(),
+            "Should successfully resize and insert character"
+        );
+
+        // Check that capacity increased
+        assert!(
+            buffer.capacity > 5,
+            "Capacity should have increased after resize"
+        );
+        assert_eq!(
+            buffer.capacity, 4096,
+            "Capacity should be increased to next page"
+        );
+
+        // Check that content was preserved during resize
+        unsafe {
+            for i in 0..5 {
+                assert_eq!(
+                    *buffer.content.add(i),
+                    b'A' + u8::try_from(i).unwrap(),
+                    "Content should be preserved after resize"
+                );
+            }
+            assert_eq!(
+                *buffer.content.add(5),
+                b'F',
+                "New character should be added after resize"
+            );
+        }
+
+        // Clean up
+        let _ = crate::syscall::munmap(buffer.content as usize, buffer.capacity);
+    }
     pub const _: usize = 0;
 
     use super::*;
@@ -1460,27 +1559,29 @@ pub mod tests {
         // Based on the implementation, empty buffer has 0 lines
         assert_eq!(buffer.count_lines(), 0, "Empty buffer should have 0 lines");
 
-        // Since there are 0 lines, accessing line 0 should return None
+        // We now allow line 0 to exist in an empty buffer, with position 0
+        // This allows inserting at position (0,0) in an empty file
         assert_eq!(
             buffer.find_line_start(0),
-            None,
-            "No lines should be found in empty buffer"
+            Some(0),
+            "Line 0 should exist in empty buffer at position 0"
         );
+
+        // Line end should be 0 for an empty buffer's line 0
         assert_eq!(
             buffer.find_line_end(0),
-            None,
-            "No line ends should be found in empty buffer"
+            Some(0),
+            "Line 0 end should be position 0 in empty buffer"
         );
+
+        // Since line 0 is empty, get_line should return an empty slice
         assert_eq!(
             buffer.get_line(0),
-            None,
-            "No lines should be found in empty buffer"
+            Some(&b""[..]),
+            "Line 0 in empty buffer should be empty"
         );
-        assert_eq!(
-            buffer.line_length(0, 4),
-            0,
-            "Nonexistent line length should be 0"
-        );
+
+        assert_eq!(buffer.line_length(0, 4), 0, "Empty line length should be 0");
     }
 
     #[test]
@@ -2264,13 +2365,22 @@ pub mod tests {
             "Should fail when inserting beyond current size"
         );
 
-        // Test inserting when buffer is full
+        // With our new resizing logic, buffer full condition should resize the buffer
+        let initial_capacity = buffer.capacity;
         buffer.size = buffer.capacity;
-        let result = buffer.insert_at_position(0, b'X');
-        assert!(result.is_err(), "Should fail when buffer is full");
+        let result = buffer.insert_at_position(buffer.size, b'X');
+        assert!(
+            result.is_ok(),
+            "Should resize and insert when buffer is full"
+        );
         assert_eq!(
-            buffer.size, buffer.capacity,
-            "Size should not change when insert fails"
+            buffer.size,
+            initial_capacity + 1,
+            "Size should increase after insertion with resize"
+        );
+        assert!(
+            buffer.capacity > initial_capacity,
+            "Capacity should increase after resize"
         );
 
         // Clean up the buffer
@@ -2460,6 +2570,65 @@ pub mod tests {
         assert!(
             result.is_err(),
             "Should fail inserting at non-existent line"
+        );
+
+        // Clean up the buffer
+        let _ = crate::syscall::munmap(buffer.content as usize, buffer.capacity);
+    }
+
+    #[test]
+    fn test_insert_char_empty_file() {
+        // Create a completely empty buffer for testing
+        let mut buffer = FileBuffer {
+            content: std::ptr::null_mut(),
+            size: 0,
+            capacity: 100,
+            modified: false,
+        };
+
+        // Allocate memory for the buffer
+        let prot = crate::syscall::PROT_READ | crate::syscall::PROT_WRITE;
+        let flags = crate::syscall::MAP_PRIVATE | crate::syscall::MAP_ANONYMOUS;
+        let Ok(addr) = crate::syscall::mmap(0, buffer.capacity, prot, flags, usize::MAX, 0) else {
+            panic!("Failed to allocate test buffer: mmap error");
+        };
+        buffer.content = addr as *mut u8;
+
+        // Verify the buffer is initially empty
+        assert_eq!(buffer.size, 0, "Initial buffer should be empty");
+        assert_eq!(buffer.count_lines(), 0, "Empty buffer should have 0 lines");
+        assert_eq!(
+            buffer.find_line_start(0),
+            Some(0),
+            "Line 0 should exist at position 0 in empty buffer"
+        );
+
+        // Insert a character into the empty buffer at position (0,0)
+        let result = buffer.insert_char(0, 0, b'A');
+        assert!(
+            result.is_ok(),
+            "Should successfully insert into empty buffer"
+        );
+
+        // Verify the insertion worked
+        assert_eq!(buffer.size, 1, "Buffer size should be updated");
+        assert_eq!(buffer.count_lines(), 1, "Buffer should now have 1 line");
+        assert_eq!(
+            buffer.get_line(0),
+            Some(&b"A"[..]),
+            "Line should contain inserted character"
+        );
+
+        // Insert more characters
+        buffer.insert_char(0, 1, b'B').unwrap();
+        buffer.insert_char(0, 2, b'C').unwrap();
+
+        // Verify the content
+        assert_eq!(buffer.size, 3, "Buffer size should be updated");
+        assert_eq!(
+            buffer.get_line(0),
+            Some(&b"ABC"[..]),
+            "Line should contain all inserted characters"
         );
 
         // Clean up the buffer
