@@ -22,12 +22,10 @@ enum FileBufferError {
 }
 
 struct FileBuffer {
-    content: *mut u8,     // Pointer to file content
-    size: usize,          // Current size of the file
-    capacity: usize,      // Maximum capacity of the buffer
-    modified: bool,       // Whether the file has been modified
-    original_addr: usize, // Original address from mmap (for cleanup)
-    original_size: usize, // Original size from mmap (for cleanup)
+    content: *mut u8, // Pointer to file content
+    size: usize,      // Current size of the file
+    capacity: usize,  // Maximum capacity of the buffer
+    modified: bool,   // Whether the file has been modified
 }
 
 impl FileBuffer {
@@ -49,8 +47,6 @@ impl FileBuffer {
                     size: 0,
                     capacity: new_capacity,
                     modified: true,
-                    original_addr: 0,
-                    original_size: 0,
                 })
             }
             _ => {
@@ -73,13 +69,15 @@ impl FileBuffer {
                     }
                 }
 
+                if addr != 0 && size > 0 {
+                    let _ = crate::syscall::munmap(addr, size);
+                }
+
                 Ok(FileBuffer {
                     content: new_buffer as *mut u8,
                     size,
                     capacity: new_capacity,
                     modified: false,
-                    original_addr: addr,
-                    original_size: size,
                 })
             }
         }
@@ -245,11 +243,6 @@ impl FileBuffer {
         if !self.content.is_null() && self.capacity > 0 {
             // We don't handle errors during cleanup as we can't do much about them
             let _ = crate::syscall::munmap(self.content as usize, self.capacity);
-        }
-
-        // If we had an original mapping, unmap it too
-        if self.original_addr != 0 && self.original_size > 0 {
-            let _ = crate::syscall::munmap(self.original_addr, self.original_size);
         }
     }
 
@@ -1336,11 +1329,6 @@ pub mod tests {
         let mut winsize = Winsize::new();
         winsize.rows = 24;
         winsize.cols = 80;
-        let _state = EditorState::new(winsize, &[0; 64]); // Prefixed with _ to avoid unused variable warning
-
-        // For this test, we need to ensure handle_open_file's read_key calls
-        // would receive the expected input. In a real implementation, we would
-        // inject a mock read_key function, but for now we'll verify components.
 
         // Verify that terminal functions used by handle_open_file work
         let save_result = save_cursor();
@@ -1401,8 +1389,6 @@ pub mod tests {
                 buffer.modified,
                 "New empty buffer should be marked as modified"
             );
-            assert_eq!(buffer.original_addr, 0, "Original address should be 0");
-            assert_eq!(buffer.original_size, 0, "Original size should be 0");
         }
 
         // Create a test buffer through mmap for existing content test
@@ -1436,14 +1422,6 @@ pub mod tests {
             assert!(
                 buffer.capacity >= test_size,
                 "Capacity should be at least the test size"
-            );
-            assert_eq!(
-                buffer.original_addr, addr,
-                "Original address should be saved"
-            );
-            assert_eq!(
-                buffer.original_size, test_size,
-                "Original size should be saved"
             );
             assert!(
                 !buffer.modified,
@@ -1567,8 +1545,6 @@ pub mod tests {
             size,
             capacity: size,
             modified: false,
-            original_addr: 0,
-            original_size: 0,
         }
     }
 
@@ -1612,8 +1588,6 @@ pub mod tests {
             size: 0,
             capacity: 0,
             modified: false,
-            original_addr: 0,
-            original_size: 0,
         };
 
         assert_eq!(
@@ -2314,8 +2288,6 @@ pub mod tests {
             size: 0,
             capacity: 10,
             modified: false,
-            original_addr: 0,
-            original_size: 0,
         };
 
         // Allocate memory for the buffer
@@ -2426,8 +2398,6 @@ pub mod tests {
             size: content.len(),
             capacity,
             modified: false,
-            original_addr: 0,
-            original_size: 0,
         };
 
         // Test deleting from the middle
@@ -2519,8 +2489,6 @@ pub mod tests {
             size: 0,
             capacity: 100,
             modified: false,
-            original_addr: 0,
-            original_size: 0,
         };
 
         // Allocate memory for the buffer
@@ -2603,8 +2571,6 @@ pub mod tests {
             size: 0,
             capacity: 100,
             modified: false,
-            original_addr: 0,
-            original_size: 0,
         };
 
         // Allocate memory for the buffer
@@ -2689,8 +2655,6 @@ pub mod tests {
             size: 0,
             capacity: 100,
             modified: false,
-            original_addr: 0,
-            original_size: 0,
         };
 
         // Allocate memory for the buffer
@@ -2780,8 +2744,6 @@ pub mod tests {
             size: 0,
             capacity: 100,
             modified: false,
-            original_addr: 0,
-            original_size: 0,
         };
 
         // Allocate memory for the buffer
@@ -2837,8 +2799,6 @@ pub mod tests {
             size: 0,
             capacity: 100,
             modified: false,
-            original_addr: 0,
-            original_size: 0,
         };
 
         // Allocate memory for the buffer
