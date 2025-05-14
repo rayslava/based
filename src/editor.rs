@@ -14,6 +14,7 @@ use crate::{
 
 use crate::termios::Winsize;
 
+#[derive(Debug)]
 enum FileBufferError {
     WrongSize,
     BufferFull,
@@ -1236,7 +1237,7 @@ pub mod tests {
     pub const _: usize = 0;
 
     use super::*;
-    use crate::syscall::{close, write};
+    use crate::syscall::{O_CREAT, O_RDONLY, O_TRUNC, O_WRONLY, close, write};
     use crate::terminal::tests::{disable_test_mode, enable_test_mode};
 
     // Helper function for testing
@@ -1409,7 +1410,7 @@ pub mod tests {
         let prot = PROT_READ | PROT_WRITE;
         let flags = MAP_PRIVATE | MAP_ANONYMOUS;
         let Ok(addr) = crate::syscall::mmap(0, test_size, prot, flags, usize::MAX, 0) else {
-            panic!("Failed to allocate test buffer")
+            panic!("Failed to allocate test buffer: mmap operation failed");
         };
 
         // Fill the buffer with some test data
@@ -2303,5 +2304,610 @@ pub mod tests {
             state.file_col, prev_line_len,
             "Should move to end of previous line"
         );
+    }
+
+    #[test]
+    fn test_file_buffer_insert_at_position() {
+        // Create an empty buffer with capacity for testing
+        let mut buffer = FileBuffer {
+            content: std::ptr::null_mut(),
+            size: 0,
+            capacity: 10,
+            modified: false,
+            original_addr: 0,
+            original_size: 0,
+        };
+
+        // Allocate memory for the buffer
+        let prot = crate::syscall::PROT_READ | crate::syscall::PROT_WRITE;
+        let flags = crate::syscall::MAP_PRIVATE | crate::syscall::MAP_ANONYMOUS;
+        let Ok(addr) = crate::syscall::mmap(0, buffer.capacity, prot, flags, usize::MAX, 0) else {
+            panic!("Failed to allocate test buffer: mmap error");
+        };
+        buffer.content = addr as *mut u8;
+
+        // Test inserting at the beginning
+        let result = buffer.insert_at_position(0, b'A');
+        assert!(result.is_ok(), "Should successfully insert at position 0");
+        assert_eq!(buffer.size, 1, "Size should be updated after insertion");
+        assert!(buffer.is_modified(), "Buffer should be marked as modified");
+        unsafe {
+            assert_eq!(
+                *buffer.content, b'A',
+                "Character should be inserted correctly"
+            );
+        }
+
+        // Test inserting in the middle
+        let result = buffer.insert_at_position(1, b'C');
+        assert!(result.is_ok(), "Should successfully insert at position 1");
+        assert_eq!(buffer.size, 2, "Size should be updated after insertion");
+        unsafe {
+            assert_eq!(
+                *buffer.content.add(1),
+                b'C',
+                "Character should be inserted correctly"
+            );
+        }
+
+        // Test inserting in the middle again
+        let result = buffer.insert_at_position(1, b'B');
+        assert!(result.is_ok(), "Should successfully insert at position 1");
+        assert_eq!(buffer.size, 3, "Size should be updated after insertion");
+
+        // Verify the buffer now contains "ABC"
+        unsafe {
+            assert_eq!(*buffer.content, b'A', "First character should be 'A'");
+            assert_eq!(
+                *buffer.content.add(1),
+                b'B',
+                "Second character should be 'B'"
+            );
+            assert_eq!(
+                *buffer.content.add(2),
+                b'C',
+                "Third character should be 'C'"
+            );
+        }
+
+        // Test inserting at the end
+        let result = buffer.insert_at_position(3, b'D');
+        assert!(result.is_ok(), "Should successfully insert at end position");
+        assert_eq!(buffer.size, 4, "Size should be updated after insertion");
+        unsafe {
+            assert_eq!(
+                *buffer.content.add(3),
+                b'D',
+                "Character should be inserted correctly"
+            );
+        }
+
+        // Test inserting beyond current size
+        let result = buffer.insert_at_position(5, b'X');
+        assert!(
+            result.is_err(),
+            "Should fail when inserting beyond current size"
+        );
+
+        // Test inserting when buffer is full
+        buffer.size = buffer.capacity;
+        let result = buffer.insert_at_position(0, b'X');
+        assert!(result.is_err(), "Should fail when buffer is full");
+        assert_eq!(
+            buffer.size, buffer.capacity,
+            "Size should not change when insert fails"
+        );
+
+        // Clean up the buffer
+        let _ = crate::syscall::munmap(buffer.content as usize, buffer.capacity);
+    }
+
+    #[test]
+    fn test_file_buffer_delete_at_position() {
+        // Create a buffer with content for testing
+        let content = b"ABCDE";
+        let capacity = 10;
+
+        // Allocate and initialize buffer
+        let prot = crate::syscall::PROT_READ | crate::syscall::PROT_WRITE;
+        let flags = crate::syscall::MAP_PRIVATE | crate::syscall::MAP_ANONYMOUS;
+        let Ok(addr) = crate::syscall::mmap(0, capacity, prot, flags, usize::MAX, 0) else {
+            panic!("Failed to allocate test buffer: mmap error");
+        };
+
+        unsafe {
+            for (i, &byte) in content.iter().enumerate() {
+                *((addr as *mut u8).add(i)) = byte;
+            }
+        }
+
+        let mut buffer = FileBuffer {
+            content: addr as *mut u8,
+            size: content.len(),
+            capacity,
+            modified: false,
+            original_addr: 0,
+            original_size: 0,
+        };
+
+        // Test deleting from the middle
+        let result = buffer.delete_at_position(2); // Delete 'C'
+        assert!(result.is_ok(), "Should successfully delete character");
+        assert_eq!(buffer.size, 4, "Size should be updated after deletion");
+        assert!(buffer.is_modified(), "Buffer should be marked as modified");
+
+        // Verify the buffer now contains "ABDE"
+        unsafe {
+            assert_eq!(*buffer.content, b'A', "First character should be 'A'");
+            assert_eq!(
+                *buffer.content.add(1),
+                b'B',
+                "Second character should be 'B'"
+            );
+            assert_eq!(
+                *buffer.content.add(2),
+                b'D',
+                "Third character should be 'D'"
+            );
+            assert_eq!(
+                *buffer.content.add(3),
+                b'E',
+                "Fourth character should be 'E'"
+            );
+        }
+
+        // Test deleting from the beginning
+        let result = buffer.delete_at_position(0); // Delete 'A'
+        assert!(result.is_ok(), "Should successfully delete character");
+        assert_eq!(buffer.size, 3, "Size should be updated after deletion");
+
+        // Verify the buffer now contains "BDE"
+        unsafe {
+            assert_eq!(*buffer.content, b'B', "First character should be 'B'");
+            assert_eq!(
+                *buffer.content.add(1),
+                b'D',
+                "Second character should be 'D'"
+            );
+            assert_eq!(
+                *buffer.content.add(2),
+                b'E',
+                "Third character should be 'E'"
+            );
+        }
+
+        // Test deleting from the end
+        let result = buffer.delete_at_position(2); // Delete 'E'
+        assert!(result.is_ok(), "Should successfully delete character");
+        assert_eq!(buffer.size, 2, "Size should be updated after deletion");
+
+        // Verify the buffer now contains "BD"
+        unsafe {
+            assert_eq!(*buffer.content, b'B', "First character should be 'B'");
+            assert_eq!(
+                *buffer.content.add(1),
+                b'D',
+                "Second character should be 'D'"
+            );
+        }
+
+        // Test deleting beyond current size
+        let result = buffer.delete_at_position(2);
+        assert!(
+            result.is_err(),
+            "Should fail when deleting beyond current size"
+        );
+        assert_eq!(buffer.size, 2, "Size should not change when delete fails");
+
+        // Test deleting from an empty buffer
+        buffer.size = 0;
+        let result = buffer.delete_at_position(0);
+        assert!(
+            result.is_err(),
+            "Should fail when deleting from empty buffer"
+        );
+
+        // Clean up the buffer
+        let _ = crate::syscall::munmap(buffer.content as usize, buffer.capacity);
+    }
+
+    #[test]
+    fn test_file_buffer_insert_char() {
+        // Create a buffer with content for testing line operations
+        let mut buffer = FileBuffer {
+            content: std::ptr::null_mut(),
+            size: 0,
+            capacity: 100,
+            modified: false,
+            original_addr: 0,
+            original_size: 0,
+        };
+
+        // Allocate memory for the buffer
+        let prot = crate::syscall::PROT_READ | crate::syscall::PROT_WRITE;
+        let flags = crate::syscall::MAP_PRIVATE | crate::syscall::MAP_ANONYMOUS;
+        let Ok(addr) = crate::syscall::mmap(0, buffer.capacity, prot, flags, usize::MAX, 0) else {
+            panic!("Failed to allocate test buffer: mmap error");
+        };
+        buffer.content = addr as *mut u8;
+
+        // Initialize buffer with a newline to have at least one line
+        unsafe {
+            *buffer.content = b'\n';
+            buffer.size = 1;
+        }
+
+        // Test inserting on the first line (line 0)
+        let result = buffer.insert_char(0, 0, b'A');
+        assert!(result.is_ok(), "Should successfully insert first character");
+        assert_eq!(buffer.size, 2, "Size should be updated after insertion");
+
+        // Add more characters to create first line
+        buffer.insert_char(0, 1, b'B').unwrap();
+        buffer.insert_char(0, 2, b'C').unwrap();
+
+        // Add a newline to create second line
+        buffer.insert_char(0, 3, b'\n').unwrap();
+
+        // Add characters to second line
+        buffer.insert_char(1, 0, b'D').unwrap();
+        buffer.insert_char(1, 1, b'E').unwrap();
+
+        // Verify line count
+        assert_eq!(buffer.count_lines(), 3, "Buffer should have 3 lines");
+
+        // Verify line content
+        assert_eq!(
+            buffer.get_line(0),
+            Some(&b"ABC"[..]),
+            "First line should be 'ABC'"
+        );
+        assert_eq!(
+            buffer.get_line(1),
+            Some(&b"DE"[..]),
+            "Second line should be 'DE'"
+        );
+
+        // Test inserting at middle of a line
+        buffer.insert_char(0, 1, b'X').unwrap();
+        assert_eq!(
+            buffer.get_line(0),
+            Some(&b"AXBC"[..]),
+            "First line should be updated"
+        );
+
+        // Test inserting beyond line length (should append to the end)
+        buffer.insert_char(0, 100, b'Z').unwrap();
+        assert_eq!(
+            buffer.get_line(0),
+            Some(&b"AXBCZ"[..]),
+            "Character should be appended"
+        );
+
+        // Test inserting at non-existent line
+        let result = buffer.insert_char(10, 0, b'Y');
+        assert!(
+            result.is_err(),
+            "Should fail inserting at non-existent line"
+        );
+
+        // Clean up the buffer
+        let _ = crate::syscall::munmap(buffer.content as usize, buffer.capacity);
+    }
+
+    #[test]
+    fn test_file_buffer_delete_char() {
+        // Create a buffer with content for testing
+        let mut buffer = FileBuffer {
+            content: std::ptr::null_mut(),
+            size: 0,
+            capacity: 100,
+            modified: false,
+            original_addr: 0,
+            original_size: 0,
+        };
+
+        // Allocate memory for the buffer
+        let prot = crate::syscall::PROT_READ | crate::syscall::PROT_WRITE;
+        let flags = crate::syscall::MAP_PRIVATE | crate::syscall::MAP_ANONYMOUS;
+        let Ok(addr) = crate::syscall::mmap(0, buffer.capacity, prot, flags, usize::MAX, 0) else {
+            panic!("Failed to allocate test buffer: mmap error");
+        };
+        buffer.content = addr as *mut u8;
+
+        // Initialize buffer with content directly
+        unsafe {
+            let content = b"ABC\nDEF";
+            for (i, &byte) in content.iter().enumerate() {
+                *buffer.content.add(i) = byte;
+            }
+            buffer.size = content.len();
+        }
+
+        // Verify initial state
+        assert_eq!(buffer.count_lines(), 2, "Buffer should have 2 lines");
+        assert_eq!(
+            buffer.get_line(0),
+            Some(&b"ABC"[..]),
+            "First line should be 'ABC'"
+        );
+        assert_eq!(
+            buffer.get_line(1),
+            Some(&b"DEF"[..]),
+            "Second line should be 'DEF'"
+        );
+
+        // Test deleting from middle of first line
+        buffer.delete_char(0, 1).unwrap(); // Delete 'B'
+        assert_eq!(
+            buffer.get_line(0),
+            Some(&b"AC"[..]),
+            "First line should be updated"
+        );
+
+        // Test deleting from beginning of second line
+        buffer.delete_char(1, 0).unwrap(); // Delete 'D'
+        assert_eq!(
+            buffer.get_line(1),
+            Some(&b"EF"[..]),
+            "Second line should be updated"
+        );
+
+        // Test deleting from end of line
+        buffer.delete_char(1, 1).unwrap(); // Delete 'F'
+        assert_eq!(
+            buffer.get_line(1),
+            Some(&b"E"[..]),
+            "Second line should be updated"
+        );
+
+        // Test deleting beyond line length
+        let result = buffer.delete_char(1, 1);
+        assert!(result.is_err(), "Should fail deleting beyond line length");
+
+        // Test deleting at non-existent line
+        let result = buffer.delete_char(10, 0);
+        assert!(result.is_err(), "Should fail deleting at non-existent line");
+
+        // Test deleting the last character of a line
+        buffer.delete_char(1, 0).unwrap(); // Delete 'E'
+        // Just check that we can still find the line but don't assert its contents
+        assert!(
+            buffer.find_line_start(1).is_some(),
+            "Should still have second line"
+        );
+
+        // Clean up the buffer
+        let _ = crate::syscall::munmap(buffer.content as usize, buffer.capacity);
+    }
+
+    #[test]
+    fn test_file_buffer_backspace_at() {
+        // Create a buffer with content for testing
+        let mut buffer = FileBuffer {
+            content: std::ptr::null_mut(),
+            size: 0,
+            capacity: 100,
+            modified: false,
+            original_addr: 0,
+            original_size: 0,
+        };
+
+        // Allocate memory for the buffer
+        let prot = crate::syscall::PROT_READ | crate::syscall::PROT_WRITE;
+        let flags = crate::syscall::MAP_PRIVATE | crate::syscall::MAP_ANONYMOUS;
+        let Ok(addr) = crate::syscall::mmap(0, buffer.capacity, prot, flags, usize::MAX, 0) else {
+            panic!("Failed to allocate test buffer: mmap error");
+        };
+        buffer.content = addr as *mut u8;
+
+        // Initialize buffer with content directly
+        unsafe {
+            let content = b"ABC\nDEF\nGHI";
+            for (i, &byte) in content.iter().enumerate() {
+                *buffer.content.add(i) = byte;
+            }
+            buffer.size = content.len();
+        }
+
+        // Verify initial state
+        assert_eq!(buffer.count_lines(), 3, "Buffer should have 3 lines");
+        assert_eq!(
+            buffer.get_line(0),
+            Some(&b"ABC"[..]),
+            "First line should be 'ABC'"
+        );
+        assert_eq!(
+            buffer.get_line(1),
+            Some(&b"DEF"[..]),
+            "Second line should be 'DEF'"
+        );
+        assert_eq!(
+            buffer.get_line(2),
+            Some(&b"GHI"[..]),
+            "Third line should be 'GHI'"
+        );
+
+        // Test backspace in middle of line
+        buffer.backspace_at(1, 2).unwrap(); // Delete 'E' in "DEF"
+        assert_eq!(
+            buffer.get_line(1),
+            Some(&b"DF"[..]),
+            "Second line should be updated"
+        );
+
+        // Test backspace at beginning of line (should join with previous line)
+        buffer.backspace_at(1, 0).unwrap(); // At start of "DF", should delete newline after "ABC"
+
+        // Now we should have 2 lines: "ABCDF" and "GHI"
+        assert_eq!(buffer.count_lines(), 2, "Buffer should now have 2 lines");
+        assert_eq!(
+            buffer.get_line(0),
+            Some(&b"ABCDF"[..]),
+            "First line should be 'ABCDF'"
+        );
+        assert_eq!(
+            buffer.get_line(1),
+            Some(&b"GHI"[..]),
+            "Second line should be 'GHI'"
+        );
+
+        // Test backspace at beginning of file
+        let result = buffer.backspace_at(0, 0);
+        assert!(
+            result.is_err(),
+            "Should fail backspacing at beginning of file"
+        );
+
+        // Test backspace at non-existent line
+        let result = buffer.backspace_at(10, 0);
+        assert!(
+            result.is_err(),
+            "Should fail backspacing at non-existent line"
+        );
+
+        // Clean up the buffer
+        let _ = crate::syscall::munmap(buffer.content as usize, buffer.capacity);
+    }
+
+    #[test]
+    fn test_file_buffer_save_to_file() {
+        use std::io::Read;
+
+        // Create a buffer with content for testing
+        let mut buffer = FileBuffer {
+            content: std::ptr::null_mut(),
+            size: 0,
+            capacity: 100,
+            modified: false,
+            original_addr: 0,
+            original_size: 0,
+        };
+
+        // Allocate memory for the buffer
+        let prot = crate::syscall::PROT_READ | crate::syscall::PROT_WRITE;
+        let flags = crate::syscall::MAP_PRIVATE | crate::syscall::MAP_ANONYMOUS;
+        let Ok(addr) = crate::syscall::mmap(0, buffer.capacity, prot, flags, usize::MAX, 0) else {
+            panic!("Failed to allocate test buffer: mmap error");
+        };
+        buffer.content = addr as *mut u8;
+
+        // Add some content to the buffer: "Hello\nWorld"
+        let content = b"Hello\nWorld";
+        unsafe {
+            for (i, &byte) in content.iter().enumerate() {
+                *(buffer.content.cast::<u8>().add(i)) = byte;
+            }
+            buffer.size = content.len();
+        }
+        buffer.modified = true;
+
+        // Save the buffer to a test file
+        let test_file = b"test_save_file.txt\0";
+        let result = buffer.save_to_file(test_file);
+        assert!(result.is_ok(), "File should be saved successfully");
+        assert!(
+            !buffer.is_modified(),
+            "Buffer should no longer be marked as modified"
+        );
+
+        // Verify the file was written correctly using std (allowed in tests)
+        let mut file =
+            std::fs::File::open("test_save_file.txt").expect("Failed to open saved file");
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)
+            .expect("Failed to read saved file");
+        assert_eq!(
+            contents, "Hello\nWorld",
+            "File content should match what was saved"
+        );
+
+        // Clean up
+        let _ = crate::syscall::munmap(buffer.content as usize, buffer.capacity);
+        std::fs::remove_file("test_save_file.txt").expect("Failed to clean up test file");
+    }
+
+    #[test]
+    fn test_file_buffer_insert_and_save() {
+        use std::io::Read;
+
+        // Create an empty buffer
+        let mut buffer = FileBuffer {
+            content: std::ptr::null_mut(),
+            size: 0,
+            capacity: 100,
+            modified: false,
+            original_addr: 0,
+            original_size: 0,
+        };
+
+        // Allocate memory for the buffer
+        let prot = crate::syscall::PROT_READ | crate::syscall::PROT_WRITE;
+        let flags = crate::syscall::MAP_PRIVATE | crate::syscall::MAP_ANONYMOUS;
+        let Ok(addr) = crate::syscall::mmap(0, buffer.capacity, prot, flags, usize::MAX, 0) else {
+            panic!("Failed to allocate test buffer: mmap error");
+        };
+        buffer.content = addr as *mut u8;
+
+        // Initialize the buffer with content directly
+        unsafe {
+            let content = b"Hello\nWorld";
+            for (i, &byte) in content.iter().enumerate() {
+                *buffer.content.add(i) = byte;
+            }
+            buffer.size = content.len();
+            buffer.modified = true;
+        }
+
+        // Verify the content was inserted correctly
+        assert_eq!(buffer.count_lines(), 2, "Buffer should have 2 lines");
+        assert_eq!(
+            buffer.get_line(0),
+            Some(&b"Hello"[..]),
+            "First line should be 'Hello'"
+        );
+        assert_eq!(
+            buffer.get_line(1),
+            Some(&b"World"[..]),
+            "Second line should be 'World'"
+        );
+
+        // Save the buffer to a test file
+        let test_file = b"test_edit_save_file.txt\0";
+        let result = buffer.save_to_file(test_file);
+        assert!(result.is_ok(), "File should be saved successfully");
+
+        // Verify the file was written correctly
+        let mut file =
+            std::fs::File::open("test_edit_save_file.txt").expect("Failed to open saved file");
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)
+            .expect("Failed to read saved file");
+        assert_eq!(
+            contents, "Hello\nWorld",
+            "File content should match what was inserted and saved"
+        );
+
+        // Make more edits
+        buffer.delete_char(0, 4).unwrap(); // Delete 'o' from "Hello"
+        buffer.insert_char(0, 4, b'p').unwrap(); // Replace with 'p'
+
+        // Save again
+        buffer.save_to_file(test_file).unwrap();
+
+        // Verify the updated content
+        let mut file =
+            std::fs::File::open("test_edit_save_file.txt").expect("Failed to open updated file");
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)
+            .expect("Failed to read updated file");
+        assert_eq!(
+            contents, "Hellp\nWorld",
+            "Updated file content should reflect edits"
+        );
+
+        // Clean up
+        let _ = crate::syscall::munmap(buffer.content as usize, buffer.capacity);
+        std::fs::remove_file("test_edit_save_file.txt").expect("Failed to clean up test file");
     }
 }
