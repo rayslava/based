@@ -360,6 +360,7 @@ struct EditorState {
     scroll_col: usize,  // Leftmost column being displayed
     tab_size: usize,    // Number of spaces per tab
     filename: [u8; 64], // Current file name
+    buffer: FileBuffer,
 }
 
 fn draw_status_bar(state: &EditorState) -> SysResult {
@@ -440,6 +441,12 @@ impl EditorState {
             scroll_col: 0,
             tab_size: 4,
             filename: own_filename,
+            buffer: FileBuffer {
+                content: core::ptr::null_mut(),
+                size: 0,
+                capacity: 0,
+                modified: false,
+            },
         }
     }
 
@@ -484,12 +491,12 @@ impl EditorState {
     }
 
     // Move cursor up
-    fn cursor_up(&mut self, file_buffer: &FileBuffer) {
+    fn cursor_up(&mut self) {
         if self.file_row > 0 {
             self.file_row -= 1;
 
             // Make sure cursor doesn't go beyond the end of the current line
-            let current_line_len = file_buffer.line_length(self.file_row, self.tab_size);
+            let current_line_len = self.buffer.line_length(self.file_row, self.tab_size);
             if self.file_col > current_line_len {
                 self.file_col = current_line_len;
             }
@@ -497,13 +504,13 @@ impl EditorState {
     }
 
     // Move cursor down
-    fn cursor_down(&mut self, file_buffer: &FileBuffer) {
-        let line_count = file_buffer.count_lines();
+    fn cursor_down(&mut self) {
+        let line_count = self.buffer.count_lines();
         if self.file_row + 1 < line_count {
             self.file_row += 1;
 
             // Make sure cursor doesn't go beyond the end of the current line
-            let current_line_len = file_buffer.line_length(self.file_row, self.tab_size);
+            let current_line_len = self.buffer.line_length(self.file_row, self.tab_size);
             if self.file_col > current_line_len {
                 self.file_col = current_line_len;
             }
@@ -513,22 +520,22 @@ impl EditorState {
     }
 
     // Move cursor left
-    fn cursor_left(&mut self, file_buffer: &FileBuffer) {
+    fn cursor_left(&mut self) {
         if self.file_col > 0 {
             self.file_col -= 1;
             // Note: scroll_to_cursor is now called by the key handler
         } else if self.file_row > 0 {
             // At beginning of line, move to end of previous line
             self.file_row -= 1;
-            self.file_col = file_buffer.line_length(self.file_row, self.tab_size);
+            self.file_col = self.buffer.line_length(self.file_row, self.tab_size);
             // Note: scroll_to_cursor is now called by the key handler
         }
     }
 
     // Move cursor right
-    fn cursor_right(&mut self, file_buffer: &FileBuffer) {
-        let current_line_len = file_buffer.line_length(self.file_row, self.tab_size);
-        let line_count = file_buffer.count_lines();
+    fn cursor_right(&mut self) {
+        let current_line_len = self.buffer.line_length(self.file_row, self.tab_size);
+        let line_count = self.buffer.count_lines();
 
         if self.file_col < current_line_len {
             self.file_col += 1;
@@ -548,14 +555,14 @@ impl EditorState {
     }
 
     // Move cursor to end of line (End/Ctrl+E)
-    fn cursor_end(&mut self, file_buffer: &FileBuffer) {
-        self.file_col = file_buffer.line_length(self.file_row, self.tab_size);
+    fn cursor_end(&mut self) {
+        self.file_col = self.buffer.line_length(self.file_row, self.tab_size);
         // Note: scroll_to_cursor is now called by the key handler
     }
 
     // Page up (Alt+V): move cursor up by a screen's worth of lines
 
-    fn page_up(&mut self, file_buffer: &FileBuffer) {
+    fn page_up(&mut self) {
         // Get the number of lines to scroll (screen height)
         let lines_to_scroll = self.editing_rows();
 
@@ -563,7 +570,7 @@ impl EditorState {
         self.file_row = self.file_row.saturating_sub(lines_to_scroll);
 
         // Make sure cursor doesn't go beyond the end of the current line
-        let current_line_len = file_buffer.line_length(self.file_row, self.tab_size);
+        let current_line_len = self.buffer.line_length(self.file_row, self.tab_size);
         if self.file_col > current_line_len {
             self.file_col = current_line_len;
         }
@@ -573,10 +580,10 @@ impl EditorState {
     }
 
     // Page down (Ctrl+V): move cursor down by a screen's worth of lines
-    fn page_down(&mut self, file_buffer: &FileBuffer) {
+    fn page_down(&mut self) {
         // Get the number of lines to scroll (screen height)
         let lines_to_scroll = self.editing_rows();
-        let line_count = file_buffer.count_lines();
+        let line_count = self.buffer.count_lines();
 
         // Update cursor position, but don't go beyond the end of file
         if self.file_row + lines_to_scroll < line_count {
@@ -592,7 +599,7 @@ impl EditorState {
         }
 
         // Make sure cursor doesn't go beyond the end of the current line
-        let current_line_len = file_buffer.line_length(self.file_row, self.tab_size);
+        let current_line_len = self.buffer.line_length(self.file_row, self.tab_size);
         if self.file_col > current_line_len {
             self.file_col = current_line_len;
         }
@@ -602,11 +609,11 @@ impl EditorState {
     }
 }
 
-fn draw_screen(state: &EditorState, file_buffer: &FileBuffer) -> SysResult {
+fn draw_screen(state: &EditorState) -> SysResult {
     // Calculate available height for content
     let available_rows = state.editing_rows();
     // Convert to usize for iterator
-    let line_count = file_buffer.count_lines();
+    let line_count = state.buffer.count_lines();
 
     // Draw lines from the file buffer
     // Using a manually bounded loop to avoid clippy warnings
@@ -624,7 +631,7 @@ fn draw_screen(state: &EditorState, file_buffer: &FileBuffer) -> SysResult {
         }
 
         // Get the line from file buffer
-        if let Some(line) = file_buffer.get_line(file_line_idx) {
+        if let Some(line) = state.buffer.get_line(file_line_idx) {
             if line.is_empty() {
                 continue;
             }
@@ -953,23 +960,19 @@ fn open_file(file_path: &[u8]) -> Result<FileBuffer, EditorError> {
 }
 
 #[cfg(not(tarpaulin_include))]
-fn process_cursor_key(
-    key: Key,
-    state: &mut EditorState,
-    file_buffer: &mut FileBuffer,
-) -> SysResult {
+fn process_cursor_key(key: Key, state: &mut EditorState) -> SysResult {
     match key {
-        Key::ArrowUp => state.cursor_up(file_buffer),
-        Key::ArrowDown => state.cursor_down(file_buffer),
-        Key::ArrowLeft => state.cursor_left(file_buffer),
-        Key::ArrowRight => state.cursor_right(file_buffer),
+        Key::ArrowUp => state.cursor_up(),
+        Key::ArrowDown => state.cursor_down(),
+        Key::ArrowLeft => state.cursor_left(),
+        Key::ArrowRight => state.cursor_right(),
         Key::Home => state.cursor_home(),
-        Key::End => state.cursor_end(file_buffer),
-        Key::PageUp => state.page_up(file_buffer),
-        Key::PageDown => state.page_down(file_buffer),
+        Key::End => state.cursor_end(),
+        Key::PageUp => state.page_up(),
+        Key::PageDown => state.page_down(),
         Key::Enter => {
             // Insert a newline at the current cursor position
-            if let Err(e) = file_buffer.insert_newline(state.file_row, state.file_col) {
+            if let Err(e) = state.buffer.insert_newline(state.file_row, state.file_col) {
                 print_error(
                     state.winsize,
                     match e {
@@ -988,7 +991,7 @@ fn process_cursor_key(
             // Delete the character before the cursor
             if state.file_col > 0 || state.file_row > 0 {
                 // Try to delete the character
-                if let Err(e) = file_buffer.backspace_at(state.file_row, state.file_col) {
+                if let Err(e) = state.buffer.backspace_at(state.file_row, state.file_col) {
                     print_error(
                         state.winsize,
                         match e {
@@ -1006,18 +1009,18 @@ fn process_cursor_key(
                     // We've joined the current line with the previous one
                     // Move cursor to the end of the previous line
                     state.file_row -= 1;
-                    state.file_col = file_buffer.line_length(state.file_row, state.tab_size);
+                    state.file_col = state.buffer.line_length(state.file_row, state.tab_size);
                 }
             }
         }
         Key::Delete => {
             // Delete the character at the cursor position
-            let line_count = file_buffer.count_lines();
-            let current_line_len = file_buffer.line_length(state.file_row, state.tab_size);
+            let line_count = state.buffer.count_lines();
+            let current_line_len = state.buffer.line_length(state.file_row, state.tab_size);
 
             if state.file_col < current_line_len {
                 // Normal case - delete character at cursor in the same line
-                if let Err(e) = file_buffer.delete_char(state.file_row, state.file_col) {
+                if let Err(e) = state.buffer.delete_char(state.file_row, state.file_col) {
                     print_error(
                         state.winsize,
                         match e {
@@ -1030,8 +1033,8 @@ fn process_cursor_key(
                 // Cursor position stays the same
             } else if state.file_row + 1 < line_count {
                 // At end of line - join with next line by deleting the newline
-                if let Some(line_end) = file_buffer.find_line_end(state.file_row) {
-                    if let Err(e) = file_buffer.delete_at_position(line_end) {
+                if let Some(line_end) = state.buffer.find_line_end(state.file_row) {
+                    if let Err(e) = state.buffer.delete_at_position(line_end) {
                         print_error(
                             state.winsize,
                             match e {
@@ -1047,7 +1050,7 @@ fn process_cursor_key(
         }
         Key::Char(ch) => {
             // Insert the character at the current cursor position
-            if let Err(e) = file_buffer.insert_char(state.file_row, state.file_col, ch) {
+            if let Err(e) = state.buffer.insert_char(state.file_row, state.file_col, ch) {
                 print_error(
                     state.winsize,
                     match e {
@@ -1065,11 +1068,11 @@ fn process_cursor_key(
     }
 
     state.scroll_to_cursor();
-    draw_screen(state, file_buffer)
+    draw_screen(state)
 }
 
 #[cfg(not(tarpaulin_include))]
-fn handle_open_file(state: &mut EditorState) -> Result<FileBuffer, EditorError> {
+fn handle_open_file(state: &mut EditorState) -> Result<(), EditorError> {
     save_cursor()?;
     let prompt: &str = "Enter filename: ";
     print_message(state.winsize, prompt)?;
@@ -1109,13 +1112,14 @@ fn handle_open_file(state: &mut EditorState) -> Result<FileBuffer, EditorError> 
             state.file_col = 0;
             state.scroll_row = 0;
             state.scroll_col = 0;
+            state.buffer = new_buffer;
 
             clear_screen()?;
-            draw_screen(state, &new_buffer)?;
+            draw_screen(state)?;
             print_message(state.winsize, "File opened successfully")?;
             move_cursor(0, 0)?;
             state.filename[..filename.len()].copy_from_slice(&filename);
-            Ok(new_buffer)
+            Ok(())
         }
         Err(e) => {
             print_error(state.winsize, "Error: Failed to open file")?;
@@ -1125,8 +1129,8 @@ fn handle_open_file(state: &mut EditorState) -> Result<FileBuffer, EditorError> 
 }
 
 // Handle saving the file
-fn handle_save_file(state: &mut EditorState, file_buffer: &mut FileBuffer) -> SysResult {
-    match file_buffer.save_to_file(&state.filename) {
+fn handle_save_file(state: &mut EditorState) -> SysResult {
+    match state.buffer.save_to_file(&state.filename) {
         Ok(_) => Ok(print_message(state.winsize, "File saved successfully")?),
         Err(e) => {
             print_error(state.winsize, "Error saving file")?;
@@ -1155,15 +1159,16 @@ pub fn run_editor() -> Result<(), EditorError> {
     filename[..file_path.len()].copy_from_slice(file_path);
     let mut state = EditorState::new(winsize, &filename);
     // Use a static const for the filename to avoid any potential memory issues
-    let mut file_buffer = match open_file(file_path) {
+    let file_buffer = match open_file(file_path) {
         Ok(file_buffer) => file_buffer,
         Err(e) => {
             print_error(winsize, "Error: Failed to open file")?;
             return Err(e);
         }
     };
+    state.buffer = file_buffer;
 
-    draw_screen(&state, &file_buffer)?;
+    draw_screen(&state)?;
     draw_status_bar(&state)?;
     print_message(winsize, "File opened successfully")?;
 
@@ -1174,15 +1179,13 @@ pub fn run_editor() -> Result<(), EditorError> {
                 Key::Quit => running = false,
                 Key::Refresh => {
                     clear_screen()?;
-                    draw_screen(&state, &file_buffer)?;
+                    draw_screen(&state)?;
                 }
                 Key::OpenFile => {
-                    if let Ok(buf) = handle_open_file(&mut state) {
-                        file_buffer = buf;
-                    }
+                    let _ = handle_open_file(&mut state);
                 }
                 Key::SaveFile => {
-                    handle_save_file(&mut state, &mut file_buffer)?;
+                    handle_save_file(&mut state)?;
                 }
                 Key::ArrowUp
                 | Key::ArrowDown
@@ -1195,16 +1198,16 @@ pub fn run_editor() -> Result<(), EditorError> {
                 | Key::Enter
                 | Key::Backspace
                 | Key::Delete => {
-                    process_cursor_key(key, &mut state, &mut file_buffer)?;
+                    process_cursor_key(key, &mut state)?;
                 }
                 Key::Char(_) | Key::Combination(_) => {
-                    process_cursor_key(key, &mut state, &mut file_buffer)?;
+                    process_cursor_key(key, &mut state)?;
                 }
             }
         }
 
         // Update status bar with edit status
-        let status = if file_buffer.is_modified() {
+        let status = if state.buffer.is_modified() {
             "Modified"
         } else {
             "Saved"
@@ -1962,25 +1965,25 @@ pub mod tests {
     fn test_editor_state_cursor_movement() {
         // Create a test buffer with some content for cursor movement tests
         let test_content = b"First line\nSecond line\nThird line with\ttab\nFourth line\n";
-        let buffer = create_test_file_buffer(test_content);
 
         // Create an editor state with a small window
         let mut winsize = Winsize::new();
         winsize.rows = 10;
         winsize.cols = 20;
         let mut state = EditorState::new(winsize, &[0; 64]);
+        state.buffer = create_test_file_buffer(test_content);
 
         // Test cursor_up when already at top row - should do nothing
         state.file_row = 0;
         state.file_col = 5;
-        state.cursor_up(&buffer);
+        state.cursor_up();
         assert_eq!(state.file_row, 0, "Can't move up from the top row");
         assert_eq!(state.file_col, 5, "Column shouldn't change");
 
         // Test cursor_up from a lower position
         state.file_row = 2;
         state.file_col = 5;
-        state.cursor_up(&buffer);
+        state.cursor_up();
         assert_eq!(state.file_row, 1, "Should move up one row");
         assert_eq!(
             state.file_col, 5,
@@ -1990,7 +1993,7 @@ pub mod tests {
         // Test cursor_down
         state.file_row = 1;
         state.file_col = 5;
-        state.cursor_down(&buffer);
+        state.cursor_down();
         assert_eq!(state.file_row, 2, "Should move down one row");
         assert_eq!(
             state.file_col, 5,
@@ -1998,12 +2001,12 @@ pub mod tests {
         );
 
         // Test cursor_down at bottom row - should do nothing
-        state.file_row = buffer.count_lines() - 1; // Last line
+        state.file_row = state.buffer.count_lines() - 1; // Last line
         state.file_col = 5;
-        state.cursor_down(&buffer);
+        state.cursor_down();
         assert_eq!(
             state.file_row,
-            buffer.count_lines() - 1,
+            state.buffer.count_lines() - 1,
             "Can't move down from the bottom row"
         );
         assert_eq!(state.file_col, 5, "Column shouldn't change");
@@ -2011,14 +2014,14 @@ pub mod tests {
         // Test cursor_left
         state.file_row = 1;
         state.file_col = 5;
-        state.cursor_left(&buffer);
+        state.cursor_left();
         assert_eq!(state.file_row, 1, "Row shouldn't change");
         assert_eq!(state.file_col, 4, "Column should decrease by 1");
 
         // Test cursor_left at beginning of line - move to end of previous line
         state.file_row = 1;
         state.file_col = 0;
-        state.cursor_left(&buffer);
+        state.cursor_left();
         assert_eq!(state.file_row, 0, "Should move to previous row");
         assert!(
             state.file_col > 0,
@@ -2028,16 +2031,16 @@ pub mod tests {
         // Test cursor_right
         state.file_row = 1;
         state.file_col = 5;
-        state.cursor_right(&buffer);
+        state.cursor_right();
         assert_eq!(state.file_row, 1, "Row shouldn't change");
         assert_eq!(state.file_col, 6, "Column should increase by 1");
 
         // Test cursor_right at end of line - move to beginning of next line
         // First get the line length
-        let line_len = buffer.line_length(1, state.tab_size);
+        let line_len = state.buffer.line_length(1, state.tab_size);
         state.file_row = 1;
         state.file_col = line_len; // End of line
-        state.cursor_right(&buffer);
+        state.cursor_right();
         assert_eq!(state.file_row, 2, "Should move to next row");
         assert_eq!(
             state.file_col, 0,
@@ -2054,7 +2057,7 @@ pub mod tests {
         // Test cursor_end - move to end of line
         state.file_row = 1;
         state.file_col = 0;
-        state.cursor_end(&buffer);
+        state.cursor_end();
         assert_eq!(state.file_row, 1, "Row shouldn't change");
         assert_eq!(state.file_col, line_len, "Column should be at end of line");
     }
@@ -2067,19 +2070,19 @@ pub mod tests {
             let line = format!("Line {i}\n");
             test_content.extend_from_slice(line.as_bytes());
         }
-        let buffer = create_test_file_buffer(&test_content);
 
         // Create an editor state with a small window
         let mut winsize = Winsize::new();
         winsize.rows = 10; // 8 editing rows after subtracting status bars
         winsize.cols = 20;
         let mut state = EditorState::new(winsize, &[0; 64]);
+        state.buffer = create_test_file_buffer(&test_content);
 
         // Test page_up from top (should stay at top)
         state.file_row = 0;
         state.file_col = 2;
         state.scroll_row = 0;
-        state.page_up(&buffer);
+        state.page_up();
         assert_eq!(state.file_row, 0, "Should remain at top row");
         assert_eq!(state.scroll_row, 0, "Scroll row should remain at top");
 
@@ -2094,7 +2097,7 @@ pub mod tests {
         let prev_scroll_row = state.scroll_row;
 
         // Page up should move cursor and scroll up by editing_rows
-        state.page_up(&buffer);
+        state.page_up();
 
         // Check that we moved up by the correct number of rows
         assert!(state.file_row < prev_file_row, "Should move cursor up");
@@ -2126,7 +2129,7 @@ pub mod tests {
         let prev_file_row = state.file_row;
         let prev_scroll_row = state.scroll_row;
 
-        state.page_down(&buffer);
+        state.page_down();
 
         // Check that we moved down by the correct number of rows
         assert!(state.file_row > prev_file_row, "Should move cursor down");
@@ -2136,12 +2139,12 @@ pub mod tests {
         );
 
         // Test page_down from bottom of file
-        state.file_row = buffer.count_lines() - 2;
+        state.file_row = state.buffer.count_lines() - 2;
         state.file_col = 2;
-        state.page_down(&buffer);
+        state.page_down();
         assert_eq!(
             state.file_row,
-            buffer.count_lines() - 1,
+            state.buffer.count_lines() - 1,
             "Should move to last line but not beyond"
         );
     }
@@ -2151,20 +2154,20 @@ pub mod tests {
         // Create a buffer with varying line lengths to test column adjustments
         let varying_content =
             b"Short\nLoooooooonger line\nVery very long line for testing\nShort again";
-        let buffer = create_test_file_buffer(varying_content);
 
         // Create an editor state
         let mut winsize = Winsize::new();
         winsize.rows = 10;
         winsize.cols = 20;
         let mut state = EditorState::new(winsize, &[0; 64]);
+        state.buffer = create_test_file_buffer(varying_content);
 
         // Position cursor at end of long line
         state.file_row = 2; // "Very very long line for testing"
         state.file_col = 30;
 
         // Now move up to shorter line
-        state.cursor_up(&buffer);
+        state.cursor_up();
 
         // Verify cursor column is adjusted to fit the shorter line
         assert_eq!(state.file_row, 1, "Should move up to shorter line");
@@ -2172,7 +2175,7 @@ pub mod tests {
             state.file_col < 30,
             "Column should be adjusted to fit shorter line"
         );
-        let line1_len = buffer.line_length(1, state.tab_size);
+        let line1_len = state.buffer.line_length(1, state.tab_size);
         assert_eq!(
             state.file_col, line1_len,
             "Column should be at end of shorter line"
@@ -2183,7 +2186,7 @@ pub mod tests {
         state.file_col = line1_len; // At end of this line
 
         // Move down to next line (which is longer)
-        state.cursor_down(&buffer);
+        state.cursor_down();
 
         // Verify cursor position - should maintain column
         assert_eq!(state.file_row, 2, "Should move down to next line");
@@ -2195,11 +2198,11 @@ pub mod tests {
         // Move down to shortest line
         state.file_row = 2;
         state.file_col = 20; // Somewhere in the middle of the long line
-        state.cursor_down(&buffer);
+        state.cursor_down();
 
         // Verify cursor is adjusted
         assert_eq!(state.file_row, 3, "Should move down to shorter line");
-        let line3_len = buffer.line_length(3, state.tab_size);
+        let line3_len = state.buffer.line_length(3, state.tab_size);
         assert_eq!(
             state.file_col, line3_len,
             "Column should be adjusted to end of shortest line"
@@ -2210,13 +2213,13 @@ pub mod tests {
     fn test_editor_state_integrated_operations() {
         // Create a buffer with multiple lines
         let content = b"First line\nSecond line\nThird line\nFourth line\nFifth line";
-        let buffer = create_test_file_buffer(content);
 
         // Create an editor state
         let mut winsize = Winsize::new();
         winsize.rows = 5; // Small window to test scrolling
         winsize.cols = 15;
         let mut state = EditorState::new(winsize, &[0; 64]);
+        state.buffer = create_test_file_buffer(content);
 
         // Test a sequence of operations that would typically be performed
 
@@ -2226,7 +2229,7 @@ pub mod tests {
 
         // 2. Move down several times
         for _ in 0..3 {
-            state.cursor_down(&buffer);
+            state.cursor_down();
         }
         assert_eq!(
             state.file_row, 3,
@@ -2234,11 +2237,11 @@ pub mod tests {
         );
 
         // 3. Move to end of line and then right (should go to next line)
-        state.cursor_end(&buffer);
-        let line_len = buffer.line_length(3, state.tab_size);
+        state.cursor_end();
+        let line_len = state.buffer.line_length(3, state.tab_size);
         assert_eq!(state.file_col, line_len, "Should be at end of line");
 
-        state.cursor_right(&buffer);
+        state.cursor_right();
         assert_eq!(
             state.file_row, 4,
             "Should move to next line after right from end"
@@ -2252,7 +2255,7 @@ pub mod tests {
         assert!(state.scroll_row > 0, "Should have scrolled down for line 4");
 
         // 5. Page up should move back toward the top
-        state.page_up(&buffer);
+        state.page_up();
         assert!(state.file_row < 4, "Page up should move cursor up");
         assert!(
             state.scroll_row < state.file_row,
@@ -2264,16 +2267,16 @@ pub mod tests {
         assert_eq!(state.file_col, 0, "Home should move to beginning of line");
 
         for _ in 0..5 {
-            state.cursor_right(&buffer);
+            state.cursor_right();
         }
         assert_eq!(state.file_col, 5, "Should move 5 positions right");
 
         // 7. Left movements including across line boundaries
         state.file_row = 1;
         state.file_col = 0;
-        state.cursor_left(&buffer);
+        state.cursor_left();
         assert_eq!(state.file_row, 0, "Should move up to previous line");
-        let prev_line_len = buffer.line_length(0, state.tab_size);
+        let prev_line_len = state.buffer.line_length(0, state.tab_size);
         assert_eq!(
             state.file_col, prev_line_len,
             "Should move to end of previous line"
