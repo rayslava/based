@@ -49,6 +49,19 @@ impl EditorState {
         }
     }
 
+    // Update the editor state when terminal size changes
+    pub(in crate::editor) fn update_winsize(&mut self, new_winsize: Winsize) {
+        // Store the new window size
+        self.winsize = new_winsize;
+
+        // Make sure cursor stays within visible area
+        self.scroll_to_cursor();
+
+        // Update cursor position relative to scroll position
+        self.cursor_row = self.file_row.saturating_sub(self.scroll_row);
+        self.cursor_col = self.file_col.saturating_sub(self.scroll_col);
+    }
+
     // Start search mode
     pub(in crate::editor) fn start_search(&mut self, reverse: bool) -> SysResult {
         // Save current position to return to if search is cancelled
@@ -817,6 +830,52 @@ pub mod tests {
     use crate::editor::file_buffer::tests::create_test_file_buffer;
 
     use super::*;
+
+    #[test]
+    fn test_update_winsize() {
+        use crate::terminal::tests::{disable_test_mode, enable_test_mode};
+
+        // Enable test mode to prevent terminal output
+        enable_test_mode();
+
+        // Create a test file buffer
+        let content = b"Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n";
+        let buffer = create_test_file_buffer(content);
+
+        // Create a test editor state with initial size
+        let mut winsize = Winsize::new();
+        winsize.rows = 10;
+        winsize.cols = 40;
+        let mut filename = [0u8; 64];
+        let test_name = b"test_file.txt\0";
+        filename[..test_name.len()].copy_from_slice(test_name);
+        let mut state = EditorState::new(winsize, &filename);
+        state.buffer = buffer;
+
+        // Position cursor at line 3, column 2
+        state.file_row = 2;
+        state.file_col = 2;
+        state.scroll_to_cursor();
+
+        // Create a new terminal size that's smaller
+        let mut new_winsize = Winsize::new();
+        new_winsize.rows = 5; // Smaller height
+        new_winsize.cols = 20; // Smaller width
+
+        // Update the window size
+        state.update_winsize(new_winsize);
+
+        // Check that the window size was updated
+        assert_eq!(state.winsize.rows, 5, "Winsize rows should be updated");
+        assert_eq!(state.winsize.cols, 20, "Winsize cols should be updated");
+
+        // Verify that cursor positions were recalculated after resize
+        assert_eq!(state.file_row, 2, "File row shouldn't change on resize");
+        assert_eq!(state.file_col, 2, "File col shouldn't change on resize");
+
+        // Clean up
+        disable_test_mode();
+    }
 
     #[test]
     fn test_switch_search_direction() {

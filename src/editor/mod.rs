@@ -272,6 +272,120 @@ impl Drop for FileBuffer {
     }
 }
 
+fn check_terminal_resize(state: &mut EditorState) -> SysResult {
+    let mut new_winsize = Winsize::new();
+    get_winsize(STDOUT, &mut new_winsize)?;
+
+    // Check if terminal size has changed
+    if new_winsize.rows != state.winsize.rows || new_winsize.cols != state.winsize.cols {
+        // Update the editor state with new dimensions
+        state.update_winsize(new_winsize);
+
+        // Redraw everything
+        clear_screen()?;
+        state.draw_screen()?;
+        state.draw_status_bar()?;
+        state.print_message("Terminal resized")?;
+    }
+
+    Ok(0)
+}
+
+// Process key input in search mode
+fn process_search_key(state: &mut EditorState, key: Key) -> SysResult {
+    match key {
+        Key::Escape | Key::ExitSearch => {
+            // Cancel search and return to original position
+            state.cancel_search()?;
+        }
+        Key::Enter => {
+            // Accept search and stay at current match position
+            state.accept_search()?;
+        }
+        Key::Backspace => {
+            // Remove last character from search
+            state.remove_search_char()?;
+        }
+        Key::Search => {
+            // Switch to forward search if we're in reverse search,
+            // otherwise find next match
+            if state.search.reverse {
+                state.switch_search_direction()?;
+            }
+            state.find_next_match()?;
+        }
+        Key::ReverseSearch => {
+            // Switch to reverse search if we're in forward search,
+            // otherwise find next match
+            if !state.search.reverse {
+                state.switch_search_direction()?;
+            }
+            state.find_next_match()?;
+        }
+        Key::Char(ch) => {
+            // Add character to search query and find matches
+            if ch.is_ascii_graphic() || ch == b' ' {
+                state.add_search_char(ch)?;
+            }
+        }
+        _ => {} // Ignore other keys in search mode
+    }
+
+    Ok(0)
+}
+
+// Process key input in normal editor mode
+fn process_normal_key(state: &mut EditorState, key: Key, running: &mut bool) -> SysResult {
+    state.print_message("")?;
+
+    match key {
+        Key::Quit => *running = false,
+        Key::Refresh => {
+            // Force a terminal resize check (also handles redrawing)
+            check_terminal_resize(state)?;
+            if check_terminal_resize(state).is_err() {
+                clear_screen()?;
+                state.draw_screen()?;
+            }
+        }
+        Key::OpenFile => {
+            let _ = handle_open_file(state);
+        }
+        Key::SaveFile => {
+            handle_save_file(state)?;
+        }
+        Key::Search => {
+            // Enter forward search mode
+            state.start_search(false)?;
+        }
+        Key::ReverseSearch => {
+            // Enter reverse search mode
+            state.start_search(true)?;
+        }
+        Key::ArrowUp
+        | Key::ArrowDown
+        | Key::ArrowLeft
+        | Key::ArrowRight
+        | Key::Home
+        | Key::End
+        | Key::PageUp
+        | Key::PageDown
+        | Key::FirstChar
+        | Key::LastChar
+        | Key::Enter
+        | Key::Backspace
+        | Key::Delete => {
+            process_cursor_key(key, state)?;
+        }
+        Key::Char(_) | Key::Combination(_) => {
+            process_cursor_key(key, state)?;
+        }
+        Key::Escape | Key::ExitSearch => {}
+    }
+
+    Ok(0)
+}
+
 pub fn run_editor() -> Result<(), EditorError> {
     enter_alternate_screen()?;
     clear_screen()?;
@@ -284,7 +398,8 @@ pub fn run_editor() -> Result<(), EditorError> {
     let mut filename = [0u8; 64];
     filename[..file_path.len()].copy_from_slice(file_path);
     let mut state = EditorState::new(winsize, &filename);
-    // Use a static const for the filename to avoid any potential memory issues
+
+    // Open the file
     let file_buffer = match open_file(file_path) {
         Ok(file_buffer) => file_buffer,
         Err(e) => {
@@ -294,99 +409,26 @@ pub fn run_editor() -> Result<(), EditorError> {
     };
     state.buffer = file_buffer;
 
+    // Initial screen render
     state.draw_screen()?;
     state.draw_status_bar()?;
     state.print_message("File opened successfully")?;
 
+    // Main editor loop
     let mut running = true;
+
     while running {
         if let Some(key) = read_key() {
+            // Process key based on current mode
             if state.search.mode {
-                // Search mode
-                match key {
-                    Key::Escape | Key::ExitSearch => {
-                        // Cancel search and return to original position
-                        state.cancel_search()?;
-                    }
-                    Key::Enter => {
-                        // Accept search and stay at current match position
-                        state.accept_search()?;
-                    }
-                    Key::Backspace => {
-                        // Remove last character from search
-                        state.remove_search_char()?;
-                    }
-                    Key::Search => {
-                        // Switch to forward search if we're in reverse search,
-                        // otherwise find next match
-                        if state.search.reverse {
-                            state.switch_search_direction()?;
-                        }
-                        state.find_next_match()?;
-                    }
-                    Key::ReverseSearch => {
-                        // Switch to reverse search if we're in forward search,
-                        // otherwise find next match
-                        if !state.search.reverse {
-                            state.switch_search_direction()?;
-                        }
-                        state.find_next_match()?;
-                    }
-                    Key::Char(ch) => {
-                        // Add character to search query and find matches
-                        if ch.is_ascii_graphic() || ch == b' ' {
-                            state.add_search_char(ch)?;
-                        }
-                    }
-                    _ => {} // Ignore other keys in search mode
-                }
+                process_search_key(&mut state, key)?;
             } else {
-                // Normal editor mode
-                state.print_message("")?;
-                match key {
-                    Key::Quit => running = false,
-                    Key::Refresh => {
-                        clear_screen()?;
-                        state.draw_screen()?;
-                    }
-                    Key::OpenFile => {
-                        let _ = handle_open_file(&mut state);
-                    }
-                    Key::SaveFile => {
-                        handle_save_file(&mut state)?;
-                    }
-                    Key::Search => {
-                        // Enter forward search mode
-                        state.start_search(false)?;
-                    }
-                    Key::ReverseSearch => {
-                        // Enter reverse search mode
-                        state.start_search(true)?;
-                    }
-                    Key::ArrowUp
-                    | Key::ArrowDown
-                    | Key::ArrowLeft
-                    | Key::ArrowRight
-                    | Key::Home
-                    | Key::End
-                    | Key::PageUp
-                    | Key::PageDown
-                    | Key::FirstChar
-                    | Key::LastChar
-                    | Key::Enter
-                    | Key::Backspace
-                    | Key::Delete => {
-                        process_cursor_key(key, &mut state)?;
-                    }
-                    Key::Char(_) | Key::Combination(_) => {
-                        process_cursor_key(key, &mut state)?;
-                    }
-                    Key::Escape | Key::ExitSearch => {}
-                }
+                process_normal_key(&mut state, key, &mut running)?;
             }
         }
+
+        // Update status bar and cursor position
         state.draw_status_bar()?;
-        // Move cursor back to editing position
         move_cursor(state.cursor_row, state.cursor_col)?;
     }
 
