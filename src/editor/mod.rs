@@ -316,8 +316,20 @@ pub fn run_editor() -> Result<(), EditorError> {
                         // Remove last character from search
                         state.remove_search_char()?;
                     }
-                    Key::Search | Key::ReverseSearch => {
-                        // Find next match for current query
+                    Key::Search => {
+                        // Switch to forward search if we're in reverse search,
+                        // otherwise find next match
+                        if state.search.reverse {
+                            state.switch_search_direction()?;
+                        }
+                        state.find_next_match()?;
+                    }
+                    Key::ReverseSearch => {
+                        // Switch to reverse search if we're in forward search,
+                        // otherwise find next match
+                        if !state.search.reverse {
+                            state.switch_search_direction()?;
+                        }
                         state.find_next_match()?;
                     }
                     Key::Char(ch) => {

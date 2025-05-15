@@ -28,6 +28,10 @@ impl SearchState {
         }
     }
 
+    pub(in crate::editor) fn switch_direction(&mut self) {
+        self.reverse = !self.reverse;
+    }
+
     // Check if query matches at a specific position in a line
     fn is_match_at(&self, line: &[u8], pos: usize) -> bool {
         if pos + self.query_len > line.len() {

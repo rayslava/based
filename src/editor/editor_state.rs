@@ -240,6 +240,48 @@ impl EditorState {
         result
     }
 
+    // Switch search direction and update display
+    pub(in crate::editor) fn switch_search_direction(&mut self) -> SysResult {
+        // Only proceed if in search mode and with a valid query
+        if !self.search.mode || self.search.query_len == 0 {
+            return Ok(0);
+        }
+
+        // Switch the direction
+        self.search.switch_direction();
+
+        // Update the search prompt based on the new direction
+        let result = self.print_status(|| {
+            let mut inner_result;
+
+            // Display appropriate search prompt based on new direction
+            if self.search.reverse {
+                inner_result = puts("Reverse search: ");
+            } else {
+                inner_result = puts("Search: ");
+            }
+
+            // Display the query text
+            if inner_result.is_ok() {
+                inner_result =
+                    write_unchecked(STDOUT, self.search.query.as_ptr(), self.search.query_len);
+            }
+
+            if inner_result.is_ok() {
+                inner_result = Ok(0);
+            }
+            inner_result
+        });
+
+        if result.is_ok() {
+            // No need to change the current match yet - keep it the same until the user presses
+            // the key to find the next match in the new direction
+            self.draw_screen()
+        } else {
+            result
+        }
+    }
+
     // Remove the last character from the search query
     pub(in crate::editor) fn remove_search_char(&mut self) -> SysResult {
         // Initialize result to Ok(0), will be updated if needed
@@ -775,6 +817,55 @@ pub mod tests {
     use crate::editor::file_buffer::tests::create_test_file_buffer;
 
     use super::*;
+
+    #[test]
+    fn test_switch_search_direction() {
+        use crate::terminal::tests::{disable_test_mode, enable_test_mode};
+
+        // Enable test mode to prevent terminal output
+        enable_test_mode();
+
+        // Create a simplified test file buffer with content that has multiple search matches
+        let content = b"First search\nSecond line\nThird search\n";
+        let buffer = create_test_file_buffer(content);
+
+        // Create a test editor state
+        let mut winsize = Winsize::new();
+        winsize.rows = 24;
+        winsize.cols = 80;
+        let mut filename = [0u8; 64];
+        let test_name = b"test_file.txt\0";
+        filename[..test_name.len()].copy_from_slice(test_name);
+        let mut state = EditorState::new(winsize, &filename);
+        state.buffer = buffer;
+
+        // Start with forward search
+        let _ = state.start_search(false);
+        assert!(!state.search.reverse, "Should start in forward search mode");
+
+        // Add a search query
+        let _ = state.add_search_char(b's');
+        let _ = state.add_search_char(b'e');
+        let _ = state.add_search_char(b'a');
+        let _ = state.add_search_char(b'r');
+        let _ = state.add_search_char(b'c');
+        let _ = state.add_search_char(b'h');
+
+        // Switch to reverse search
+        let _ = state.switch_search_direction();
+        assert!(state.search.reverse, "Search should now be in reverse mode");
+
+        // Switch back to forward search
+        let _ = state.switch_search_direction();
+        assert!(
+            !state.search.reverse,
+            "Search should be back in forward mode"
+        );
+
+        // Clean up
+        state.cancel_search().unwrap();
+        disable_test_mode();
+    }
 
     #[test]
     fn test_editor_state_search() {
