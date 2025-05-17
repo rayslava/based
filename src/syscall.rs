@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+pub const MAX_PATH: usize = 256;
+
 // Constants for system calls
 pub const READ: usize = 0;
 pub const WRITE: usize = 1;

@@ -1,10 +1,11 @@
 use super::FileBuffer;
+use crate::syscall::MAX_PATH;
 
 // Editor state structure to track view and cursor position
 pub(in crate::editor) struct SearchState {
     pub(in crate::editor) mode: bool,    // Whether we're in search mode
     pub(in crate::editor) reverse: bool, // Whether we're in reverse search mode
-    pub(in crate::editor) query: [u8; 64], // Search query string
+    pub(in crate::editor) query: [u8; MAX_PATH], // Search query string
     pub(in crate::editor) query_len: usize, // Length of the search query
     pub(in crate::editor) orig_row: usize, // Original row position before search
     pub(in crate::editor) orig_col: usize, // Original column position before search
@@ -18,7 +19,7 @@ impl SearchState {
         Self {
             mode: false,
             reverse: false,
-            query: [0u8; 64],
+            query: [0u8; MAX_PATH],
             query_len: 0,
             orig_row: 0,
             orig_col: 0,
@@ -292,7 +293,7 @@ pub mod tests {
         let mut winsize = Winsize::new();
         winsize.rows = 24;
         winsize.cols = 80;
-        let mut filename = [0u8; 64];
+        let mut filename = [0u8; MAX_PATH];
         let test_name = b"test_file.txt\0";
         filename[..test_name.len()].copy_from_slice(test_name);
         let mut state = EditorState::new(winsize, &filename);

@@ -1,5 +1,5 @@
 use crate::{
-    syscall::{STDOUT, SysResult, putchar, puts, write_buf, write_unchecked},
+    syscall::{MAX_PATH, STDOUT, SysResult, putchar, puts, write_buf, write_unchecked},
     terminal::{
         clear_line, move_cursor, reset_colors, restore_cursor, save_cursor, set_bg_color, set_bold,
         set_fg_color, write_number,
@@ -18,15 +18,15 @@ pub(in crate::editor) struct EditorState {
     pub(in crate::editor) scroll_row: usize, // Top row of the file being displayed
     pub(in crate::editor) scroll_col: usize, // Leftmost column being displayed
     pub(in crate::editor) tab_size: usize,  // Number of spaces per tab
-    pub(in crate::editor) filename: [u8; 64], // Current file name
+    pub(in crate::editor) filename: [u8; MAX_PATH], // Current file name
     pub(in crate::editor) buffer: FileBuffer,
     pub(in crate::editor) search: SearchState, // Search state
 }
 
 impl EditorState {
     // Create a new editor state
-    pub(in crate::editor) fn new(winsize: Winsize, filename: &[u8; 64]) -> Self {
-        let mut own_filename = [0u8; 64];
+    pub(in crate::editor) fn new(winsize: Winsize, filename: &[u8; MAX_PATH]) -> Self {
+        let mut own_filename = [0u8; MAX_PATH];
         own_filename[..filename.len()].copy_from_slice(filename);
 
         Self {
@@ -846,7 +846,7 @@ pub mod tests {
         let mut winsize = Winsize::new();
         winsize.rows = 10;
         winsize.cols = 40;
-        let mut filename = [0u8; 64];
+        let mut filename = [0u8; MAX_PATH];
         let test_name = b"test_file.txt\0";
         filename[..test_name.len()].copy_from_slice(test_name);
         let mut state = EditorState::new(winsize, &filename);
@@ -892,7 +892,7 @@ pub mod tests {
         let mut winsize = Winsize::new();
         winsize.rows = 24;
         winsize.cols = 80;
-        let mut filename = [0u8; 64];
+        let mut filename = [0u8; MAX_PATH];
         let test_name = b"test_file.txt\0";
         filename[..test_name.len()].copy_from_slice(test_name);
         let mut state = EditorState::new(winsize, &filename);
@@ -941,7 +941,7 @@ pub mod tests {
         let mut winsize = Winsize::new();
         winsize.rows = 24;
         winsize.cols = 80;
-        let mut filename = [0u8; 64];
+        let mut filename = [0u8; MAX_PATH];
         let test_name = b"test_file.txt\0";
         filename[..test_name.len()].copy_from_slice(test_name);
         let mut state = EditorState::new(winsize, &filename);
@@ -1035,7 +1035,7 @@ pub mod tests {
         let mut winsize = Winsize::new();
         winsize.rows = 24;
         winsize.cols = 80;
-        let mut filename = [0u8; 64];
+        let mut filename = [0u8; MAX_PATH];
         let test_name = b"test_file.txt\0";
         filename[..test_name.len()].copy_from_slice(test_name);
         let mut state = EditorState::new(winsize, &filename);
@@ -1106,7 +1106,7 @@ pub mod tests {
         winsize.rows = 24;
         winsize.cols = 80;
 
-        let state = EditorState::new(winsize, &[0; 64]);
+        let state = EditorState::new(winsize, &[0; MAX_PATH]);
 
         // Test print_message
         enable_test_mode();

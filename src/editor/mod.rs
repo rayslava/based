@@ -19,7 +19,7 @@ use crate::terminal::{
 };
 use crate::termios::Winsize;
 use crate::{
-    syscall::{putchar, write_buf},
+    syscall::{MAX_PATH, putchar, write_buf},
     terminal::clear_line,
 };
 
@@ -204,7 +204,7 @@ fn handle_open_file(state: &mut EditorState) -> Result<(), EditorError> {
     state.print_message(prompt)?;
     move_cursor(state.winsize.rows as usize - 1, prompt.len())?;
 
-    let mut filename = [0u8; 64];
+    let mut filename = [0u8; MAX_PATH];
     let mut len: usize = 0;
     loop {
         if let Some(key) = read_key() {
@@ -395,7 +395,7 @@ pub fn run_editor() -> Result<(), EditorError> {
 
     let file_path = b"file.txt\0";
     // Create a new array filled with zeros
-    let mut filename = [0u8; 64];
+    let mut filename = [0u8; MAX_PATH];
     filename[..file_path.len()].copy_from_slice(file_path);
     let mut state = EditorState::new(winsize, &filename);
 
@@ -584,7 +584,7 @@ pub mod tests {
         winsize.cols = 80;
 
         // Create a new editor state
-        let state = EditorState::new(winsize, &[0; 64]);
+        let state = EditorState::new(winsize, &[0; MAX_PATH]);
 
         // Verify initial state
         assert_eq!(state.winsize.rows, 24, "Winsize rows should match");
@@ -604,7 +604,7 @@ pub mod tests {
         let mut winsize = Winsize::new();
         winsize.rows = 24; // Normal sized terminal
         winsize.cols = 80;
-        let state = EditorState::new(winsize, &[0; 64]);
+        let state = EditorState::new(winsize, &[0; MAX_PATH]);
 
         // Should have rows - 2 available for editing (2 rows for status and message)
         assert_eq!(
@@ -617,7 +617,7 @@ pub mod tests {
         let mut small_winsize = Winsize::new();
         small_winsize.rows = 1; // Too small for status bars
         small_winsize.cols = 80;
-        let small_state = EditorState::new(small_winsize, &[0; 64]);
+        let small_state = EditorState::new(small_winsize, &[0; MAX_PATH]);
 
         // Should use all available rows since it's too small for status bars
         assert_eq!(
@@ -630,7 +630,7 @@ pub mod tests {
         let mut zero_winsize = Winsize::new();
         zero_winsize.rows = 0;
         zero_winsize.cols = 80;
-        let zero_state = EditorState::new(zero_winsize, &[0; 64]);
+        let zero_state = EditorState::new(zero_winsize, &[0; MAX_PATH]);
 
         // Should handle zero rows gracefully
         assert_eq!(
@@ -646,7 +646,7 @@ pub mod tests {
         let mut winsize = Winsize::new();
         winsize.rows = 10; // Small window for easier testing
         winsize.cols = 20;
-        let mut state = EditorState::new(winsize, &[0; 64]);
+        let mut state = EditorState::new(winsize, &[0; MAX_PATH]);
 
         // Test case 1: Cursor is within visible area - nothing should change
         state.file_row = 5;
@@ -758,7 +758,7 @@ pub mod tests {
         let mut winsize = Winsize::new();
         winsize.rows = 10;
         winsize.cols = 20;
-        let mut state = EditorState::new(winsize, &[0; 64]);
+        let mut state = EditorState::new(winsize, &[0; MAX_PATH]);
         state.buffer = create_test_file_buffer(test_content);
 
         // Test cursor_up when already at top row - should do nothing
@@ -863,7 +863,7 @@ pub mod tests {
         let mut winsize = Winsize::new();
         winsize.rows = 10; // 8 editing rows after subtracting status bars
         winsize.cols = 20;
-        let mut state = EditorState::new(winsize, &[0; 64]);
+        let mut state = EditorState::new(winsize, &[0; MAX_PATH]);
         state.buffer = create_test_file_buffer(&test_content);
 
         // Test page_up from top (should stay at top)
@@ -947,7 +947,7 @@ pub mod tests {
         let mut winsize = Winsize::new();
         winsize.rows = 10;
         winsize.cols = 20;
-        let mut state = EditorState::new(winsize, &[0; 64]);
+        let mut state = EditorState::new(winsize, &[0; MAX_PATH]);
         state.buffer = create_test_file_buffer(varying_content);
 
         // Position cursor at end of long line
@@ -1006,7 +1006,7 @@ pub mod tests {
         let mut winsize = Winsize::new();
         winsize.rows = 5; // Small window to test scrolling
         winsize.cols = 15;
-        let mut state = EditorState::new(winsize, &[0; 64]);
+        let mut state = EditorState::new(winsize, &[0; MAX_PATH]);
         state.buffer = create_test_file_buffer(content);
 
         // Test a sequence of operations that would typically be performed

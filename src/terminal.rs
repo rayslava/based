@@ -177,9 +177,10 @@ pub fn restore_cursor() -> SysResult {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use crate::syscall::MAX_PATH;
 
     // Test buffer for capturing output in tests
-    pub static mut TEST_BUFFER: [u8; 64] = [0; 64];
+    pub static mut TEST_BUFFER: [u8; MAX_PATH] = [0; MAX_PATH];
     pub static mut TEST_BUFFER_LEN: usize = 0;
     static mut TEST_MODE: bool = false;
 
@@ -200,7 +201,7 @@ pub mod tests {
     pub fn enable_test_mode() {
         unsafe {
             TEST_MODE = true;
-            TEST_BUFFER = [0; 64];
+            TEST_BUFFER = [0; MAX_PATH];
             TEST_BUFFER_LEN = 0;
         }
     }
