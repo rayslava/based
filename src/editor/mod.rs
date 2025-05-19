@@ -858,21 +858,23 @@ pub mod tests {
         // Test cursor_up from a lower position
         state.file_row = 2;
         state.file_col = 5;
+        state.preferred_col = 5; // Set the preferred column first
         state.cursor_up();
         assert_eq!(state.file_row, 1, "Should move up one row");
         assert_eq!(
             state.file_col, 5,
-            "Column shouldn't change when it fits on the line"
+            "Column should match preferred column when it fits on the line"
         );
 
         // Test cursor_down
         state.file_row = 1;
         state.file_col = 5;
+        state.preferred_col = 5; // Set preferred column
         state.cursor_down();
         assert_eq!(state.file_row, 2, "Should move down one row");
         assert_eq!(
             state.file_col, 5,
-            "Column shouldn't change when it fits on the line"
+            "Column should match preferred column when it fits on the line"
         );
 
         // Test cursor_down at bottom row - should do nothing
@@ -1040,11 +1042,14 @@ pub mod tests {
         // Position cursor at end of long line
         state.file_row = 2; // "Very very long line for testing"
         state.file_col = 30;
+        // Set the preferred column to match the current column
+        state.preferred_col = 30;
 
         // Now move up to shorter line
         state.cursor_up();
 
         // Verify cursor column is adjusted to fit the shorter line
+        // but preferred column remembers original position
         assert_eq!(state.file_row, 1, "Should move up to shorter line");
         assert!(
             state.file_col < 30,
@@ -1055,24 +1060,34 @@ pub mod tests {
             state.file_col, line1_len,
             "Column should be at end of shorter line"
         );
+        assert_eq!(
+            state.preferred_col, 30,
+            "Preferred column should remember original position"
+        );
 
         // Test similar adjustment moving down to shorter line
         state.file_row = 1; // "Loooooooonger line"
         state.file_col = line1_len; // At end of this line
+        state.preferred_col = line1_len; // Update preferred column
 
         // Move down to next line (which is longer)
         state.cursor_down();
 
-        // Verify cursor position - should maintain column
+        // Verify cursor position - should maintain column based on preferred column
         assert_eq!(state.file_row, 2, "Should move down to next line");
         assert_eq!(
             state.file_col, line1_len,
             "Column should be preserved when moving to longer line"
         );
+        assert_eq!(
+            state.preferred_col, line1_len,
+            "Preferred column should be updated"
+        );
 
         // Move down to shortest line
         state.file_row = 2;
         state.file_col = 20; // Somewhere in the middle of the long line
+        state.preferred_col = 20; // Set preferred column
         state.cursor_down();
 
         // Verify cursor is adjusted
@@ -1081,6 +1096,10 @@ pub mod tests {
         assert_eq!(
             state.file_col, line3_len,
             "Column should be adjusted to end of shortest line"
+        );
+        assert_eq!(
+            state.preferred_col, 20,
+            "Preferred column should be preserved"
         );
     }
 

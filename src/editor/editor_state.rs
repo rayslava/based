@@ -15,6 +15,7 @@ pub(in crate::editor) struct EditorState {
     pub(in crate::editor) cursor_col: usize, // Cursor column in the visible window
     pub(in crate::editor) file_row: usize,  // Row in the file (0-based)
     pub(in crate::editor) file_col: usize,  // Column in the file (0-based)
+    pub(in crate::editor) preferred_col: usize, // Remembered column position for vertical movement
     pub(in crate::editor) scroll_row: usize, // Top row of the file being displayed
     pub(in crate::editor) scroll_col: usize, // Leftmost column being displayed
     pub(in crate::editor) tab_size: usize,  // Number of spaces per tab
@@ -35,6 +36,7 @@ impl EditorState {
             cursor_col: 0,
             file_row: 0,
             file_col: 0,
+            preferred_col: 0,
             scroll_row: 0,
             scroll_col: 0,
             tab_size: 4,
@@ -480,32 +482,32 @@ impl EditorState {
         self.cursor_col = self.file_col.saturating_sub(self.scroll_col);
     }
 
-    // Move cursor up
     pub(in crate::editor) fn cursor_up(&mut self) {
         if self.file_row > 0 {
             self.file_row -= 1;
 
-            // Make sure cursor doesn't go beyond the end of the current line
-            let current_line_len = self.buffer.line_length(self.file_row, self.tab_size);
-            if self.file_col > current_line_len {
-                self.file_col = current_line_len;
+            let new_line_len = self.buffer.line_length(self.file_row, self.tab_size);
+            if self.preferred_col > new_line_len {
+                self.file_col = new_line_len;
+            } else {
+                self.file_col = self.preferred_col;
             }
         }
     }
 
-    // Move cursor down
     pub(in crate::editor) fn cursor_down(&mut self) {
         let line_count = self.buffer.count_lines();
         if self.file_row + 1 < line_count {
+            // Move to the next line
             self.file_row += 1;
 
-            // Make sure cursor doesn't go beyond the end of the current line
-            let current_line_len = self.buffer.line_length(self.file_row, self.tab_size);
-            if self.file_col > current_line_len {
-                self.file_col = current_line_len;
+            // Set cursor column to either preferred position or end of line
+            let new_line_len = self.buffer.line_length(self.file_row, self.tab_size);
+            if self.preferred_col > new_line_len {
+                self.file_col = new_line_len;
+            } else {
+                self.file_col = self.preferred_col;
             }
-
-            // Note: scroll_to_cursor is now called by the key handler
         }
     }
 
@@ -513,44 +515,39 @@ impl EditorState {
     pub(in crate::editor) fn cursor_left(&mut self) {
         if self.file_col > 0 {
             self.file_col -= 1;
-            // Note: scroll_to_cursor is now called by the key handler
+            // Update preferred column
+            self.preferred_col = self.file_col;
         } else if self.file_row > 0 {
             // At beginning of line, move to end of previous line
             self.file_row -= 1;
             self.file_col = self.buffer.line_length(self.file_row, self.tab_size);
-            // Note: scroll_to_cursor is now called by the key handler
+            self.preferred_col = self.file_col;
         }
     }
 
-    // Move cursor right
     pub(in crate::editor) fn cursor_right(&mut self) {
         let current_line_len = self.buffer.line_length(self.file_row, self.tab_size);
         let line_count = self.buffer.count_lines();
 
         if self.file_col < current_line_len {
             self.file_col += 1;
-            // Note: scroll_to_cursor is now called by the key handler
+            self.preferred_col = self.file_col;
         } else if self.file_row + 1 < line_count {
-            // At end of line, move to beginning of next line
             self.file_row += 1;
             self.file_col = 0;
-            // Note: scroll_to_cursor is now called by the key handler
+            self.preferred_col = self.file_col;
         }
     }
 
-    // Move cursor to beginning of line (Home/Ctrl+A)
     pub(in crate::editor) fn cursor_home(&mut self) {
         self.file_col = 0;
-        // Note: scroll_to_cursor is now called by the key handler
+        self.preferred_col = self.file_col;
     }
 
-    // Move cursor to end of line (End/Ctrl+E)
     pub(in crate::editor) fn cursor_end(&mut self) {
         self.file_col = self.buffer.line_length(self.file_row, self.tab_size);
-        // Note: scroll_to_cursor is now called by the key handler
+        self.preferred_col = self.file_col;
     }
-
-    // Page up (Alt+V): move cursor up by a screen's worth of lines
 
     pub(in crate::editor) fn page_up(&mut self) {
         // Get the number of lines to scroll (screen height)
@@ -560,41 +557,35 @@ impl EditorState {
         self.file_row = self.file_row.saturating_sub(lines_to_scroll);
 
         // Make sure cursor doesn't go beyond the end of the current line
+        // but preserve the preferred column during vertical movement
         let current_line_len = self.buffer.line_length(self.file_row, self.tab_size);
         if self.file_col > current_line_len {
             self.file_col = current_line_len;
         }
 
-        // Update cursor position based on scroll
         self.cursor_row = self.file_row - self.scroll_row;
     }
 
-    // Page down (Ctrl+V): move cursor down by a screen's worth of lines
     pub(in crate::editor) fn page_down(&mut self) {
-        // Get the number of lines to scroll (screen height)
         let lines_to_scroll = self.editing_rows();
         let line_count = self.buffer.count_lines();
 
-        // Update cursor position, but don't go beyond the end of file
         if self.file_row + lines_to_scroll < line_count {
             self.file_row += lines_to_scroll;
         } else {
             self.file_row = line_count - 1;
         }
 
-        // Update scroll position
         let max_scroll_row = self.file_row - self.editing_rows() + 1;
         if max_scroll_row > 0 {
             self.scroll_row = max_scroll_row;
         }
 
-        // Make sure cursor doesn't go beyond the end of the current line
         let current_line_len = self.buffer.line_length(self.file_row, self.tab_size);
         if self.file_col > current_line_len {
             self.file_col = current_line_len;
         }
 
-        // Update cursor position based on scroll
         self.cursor_row = self.file_row - self.scroll_row;
     }
 
@@ -602,6 +593,8 @@ impl EditorState {
     pub(in crate::editor) fn cursor_first_char(&mut self) {
         self.file_row = 0;
         self.file_col = 0;
+        // Update preferred column
+        self.preferred_col = self.file_col;
         // Note: scroll_to_cursor is called by the key handler
     }
 
@@ -611,6 +604,8 @@ impl EditorState {
         if line_count > 0 {
             self.file_row = line_count - 1;
             self.file_col = self.buffer.line_length(self.file_row, self.tab_size);
+            // Update preferred column
+            self.preferred_col = self.file_col;
         }
         // Note: scroll_to_cursor is called by the key handler
     }
