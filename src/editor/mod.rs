@@ -8,11 +8,11 @@ pub(in crate::editor) use file_buffer::{FileBuffer, FileBufferError};
 pub(in crate::editor) use key_handlers::{Key, read_key};
 pub(in crate::editor) use search_state::SearchState;
 
-use crate::syscall::SysResult;
 use crate::syscall::{
     MAP_ANONYMOUS, MAP_PRIVATE, O_RDONLY, PROT_READ, PROT_WRITE, SEEK_END, SEEK_SET, STDOUT, close,
     lseek, mmap, open,
 };
+use crate::syscall::{SysResult, read};
 use crate::terminal::move_cursor;
 use crate::terminal::{
     clear_screen, enter_alternate_screen, exit_alternate_screen, get_winsize, save_cursor,
@@ -386,6 +386,48 @@ fn process_normal_key(state: &mut EditorState, key: Key, running: &mut bool) -> 
     Ok(0)
 }
 
+fn get_cmdline_filename() -> Result<[u8; MAX_PATH], EditorError> {
+    let mut filename = [0u8; MAX_PATH];
+    let mut empty_file = false;
+
+    let cmdline_path = b"/proc/self/cmdline\0";
+    if let Ok(fd) = open(cmdline_path, O_RDONLY) {
+        let mut cmdline_buf = [0u8; MAX_PATH];
+        if let Ok(bytes_read) = read(fd, &mut cmdline_buf, MAX_PATH) {
+            close(fd)?;
+
+            let mut i = 0;
+            while i < bytes_read && cmdline_buf[i] != 0 {
+                i += 1;
+            }
+
+            i += 1;
+            if i < bytes_read {
+                if cmdline_buf[i] == 0 {
+                    // Empty argument provided, use empty buffer
+                    empty_file = true;
+                } else {
+                    // Non-empty argument, use it as filename
+                    filename = [0u8; MAX_PATH];
+                    let mut j = 0;
+                    while i < bytes_read && cmdline_buf[i] != 0 && j < MAX_PATH - 1 {
+                        filename[j] = cmdline_buf[i];
+                        i += 1;
+                        j += 1;
+                    }
+                    filename[j] = 0;
+                }
+            }
+        }
+    }
+
+    if empty_file {
+        filename = [0u8; MAX_PATH];
+    }
+
+    Ok(filename)
+}
+
 pub fn run_editor() -> Result<(), EditorError> {
     enter_alternate_screen()?;
     clear_screen()?;
@@ -393,26 +435,47 @@ pub fn run_editor() -> Result<(), EditorError> {
     let mut winsize = Winsize::new();
     get_winsize(STDOUT, &mut winsize)?;
 
-    let file_path = b"file.txt\0";
-    // Create a new array filled with zeros
-    let mut filename = [0u8; MAX_PATH];
-    filename[..file_path.len()].copy_from_slice(file_path);
+    let filename = get_cmdline_filename()?;
     let mut state = EditorState::new(winsize, &filename);
 
-    // Open the file
-    let file_buffer = match open_file(file_path) {
-        Ok(file_buffer) => file_buffer,
-        Err(e) => {
-            state.print_error("Error: Failed to open file")?;
-            return Err(e);
+    // Check if filename is empty (all zeros)
+    let is_empty_filename = filename.iter().all(|&b| b == 0);
+
+    state.buffer = if is_empty_filename {
+        // Create an empty buffer
+        let new_capacity = 4096;
+        let prot = PROT_READ | PROT_WRITE;
+        let flags = MAP_PRIVATE | MAP_ANONYMOUS;
+        let Ok(new_buffer) = mmap(0, new_capacity, prot, flags, usize::MAX, 0) else {
+            state.print_error("Error: Failed to create empty buffer")?;
+            return Err(EditorError::MMapFile);
+        };
+
+        FileBuffer {
+            content: new_buffer as *mut u8,
+            size: 0,
+            capacity: new_capacity,
+            modified: true,
+        }
+    } else {
+        // Open existing file
+        match open_file(&filename) {
+            Ok(buffer) => buffer,
+            Err(e) => {
+                state.print_error("Error: Failed to open file")?;
+                return Err(e);
+            }
         }
     };
-    state.buffer = file_buffer;
 
     // Initial screen render
     state.draw_screen()?;
     state.draw_status_bar()?;
-    state.print_message("File opened successfully")?;
+    if is_empty_filename {
+        state.print_message("Empty buffer created")?;
+    } else {
+        state.print_message("File opened successfully")?;
+    }
 
     // Main editor loop
     let mut running = true;

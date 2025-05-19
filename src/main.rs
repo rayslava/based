@@ -48,7 +48,7 @@ fn run() -> Result<(), usize> {
     let mut winsize = Winsize::new();
 
     if get_winsize(syscall::STDOUT, &mut winsize).is_ok() {
-        puts("Ready to open file.txt using mmap\r\n")?;
+        puts("Ready to open file using mmap\r\n")?;
     } else {
         puts("Could not get terminal size\r\n")?;
     }
@@ -62,9 +62,9 @@ fn run() -> Result<(), usize> {
         // Apply raw mode
         if set_termios(syscall::STDIN, TCSETS, &orig_termios).is_ok() {
             puts("Entered raw mode. Press q to exit.\r\n")?;
-            puts("Opening file.txt with mmap and displaying its contents.\r\n")?;
+            puts("Opening file with mmap and displaying its contents.\r\n")?;
 
-            // Run the editor
+            // Run the editor with the specified filename
             match run_editor() {
                 Ok(()) => {}
                 Err(e) => {
