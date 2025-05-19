@@ -57,14 +57,13 @@ fn run() -> Result<(), usize> {
     let mut orig_termios = Termios::new();
 
     if get_termios(syscall::STDIN, &mut orig_termios).is_ok() {
-        set_raw_mode(&mut orig_termios);
+        let mut raw_termios = orig_termios.clone();
+        set_raw_mode(&mut raw_termios);
 
-        // Apply raw mode
-        if set_termios(syscall::STDIN, TCSETS, &orig_termios).is_ok() {
+        if set_termios(syscall::STDIN, TCSETS, &raw_termios).is_ok() {
             puts("Entered raw mode. Press q to exit.\r\n")?;
             puts("Opening file with mmap and displaying its contents.\r\n")?;
 
-            // Run the editor with the specified filename
             match run_editor() {
                 Ok(()) => {}
                 Err(e) => {
@@ -75,8 +74,6 @@ fn run() -> Result<(), usize> {
                     }
                 }
             }
-
-            // Restore original settings
             set_termios(syscall::STDIN, TCSETSW, &orig_termios)?;
             puts("\r\nExited raw mode\r\n")?;
         } else {

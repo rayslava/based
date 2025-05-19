@@ -447,6 +447,7 @@ pub fn run_editor() -> Result<(), EditorError> {
         let prot = PROT_READ | PROT_WRITE;
         let flags = MAP_PRIVATE | MAP_ANONYMOUS;
         let Ok(new_buffer) = mmap(0, new_capacity, prot, flags, usize::MAX, 0) else {
+            exit_alternate_screen()?;
             state.print_error("Error: Failed to create empty buffer")?;
             return Err(EditorError::MMapFile);
         };
@@ -462,6 +463,7 @@ pub fn run_editor() -> Result<(), EditorError> {
         match open_file(&filename) {
             Ok(buffer) => buffer,
             Err(e) => {
+                exit_alternate_screen()?;
                 state.print_error("Error: Failed to open file")?;
                 return Err(e);
             }
@@ -480,23 +482,22 @@ pub fn run_editor() -> Result<(), EditorError> {
     // Main editor loop
     let mut running = true;
 
-    while running {
-        if let Some(key) = read_key() {
-            // Process key based on current mode
-            if state.search.mode {
-                process_search_key(&mut state, key)?;
-            } else {
-                process_normal_key(&mut state, key, &mut running)?;
+    let result = (|| {
+        while running {
+            if let Some(key) = read_key() {
+                if state.search.mode {
+                    process_search_key(&mut state, key)?;
+                } else {
+                    process_normal_key(&mut state, key, &mut running)?;
+                }
             }
+            state.draw_status_bar()?;
+            move_cursor(state.cursor_row, state.cursor_col)?;
         }
-
-        // Update status bar and cursor position
-        state.draw_status_bar()?;
-        move_cursor(state.cursor_row, state.cursor_col)?;
-    }
-
+        Ok(())
+    })();
     exit_alternate_screen()?;
-    Ok(())
+    result
 }
 
 #[cfg(test)]
