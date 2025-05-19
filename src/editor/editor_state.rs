@@ -511,7 +511,6 @@ impl EditorState {
         }
     }
 
-    // Move cursor left
     pub(in crate::editor) fn cursor_left(&mut self) {
         if self.file_col > 0 {
             self.file_col -= 1;
@@ -537,6 +536,138 @@ impl EditorState {
             self.file_col = 0;
             self.preferred_col = self.file_col;
         }
+    }
+
+    #[inline]
+    fn is_alnum(ch: u8) -> bool {
+        ch.is_ascii_alphanumeric()
+    }
+
+    fn find_word_start(line: &[u8], col: usize) -> usize {
+        if line.is_empty() {
+            return 0;
+        }
+
+        let mut pos = col.min(line.len() - 1);
+        while pos > 0 && !Self::is_alnum(line[pos]) {
+            pos -= 1;
+        }
+        while pos > 0 && Self::is_alnum(line[pos - 1]) {
+            pos -= 1;
+        }
+
+        pos
+    }
+
+    fn skip_current_word(line: &[u8], start_col: usize) -> usize {
+        let mut col = start_col;
+        while col < line.len() && !Self::is_alnum(line[col]) {
+            col += 1;
+        }
+        while col < line.len() && Self::is_alnum(line[col]) {
+            col += 1;
+        }
+        col
+    }
+
+    // direction: true for forward, false for backward
+    pub(in crate::editor) fn find_word_boundary(&mut self, direction: bool) {
+        let line_count = self.buffer.count_lines();
+        if line_count == 0 || self.file_row >= line_count {
+            return;
+        }
+
+        let mut row = self.file_row;
+        let mut col = self.file_col;
+
+        if direction {
+            let line_opt = self.buffer.get_line(row);
+
+            // Empty or EoL
+            if line_opt.is_none()
+                || line_opt
+                    .as_ref()
+                    .is_none_or(|l| l.is_empty() || col >= l.len())
+            {
+                if row + 1 < line_count {
+                    row += 1;
+                    col = 0;
+                }
+            } else if let Some(line) = line_opt {
+                // Within non-empty line - skip to next word boundary
+                col = EditorState::skip_current_word(line, col);
+
+                // If we ended up at end of line, move to next line
+                if col >= line.len() && row + 1 < line_count {
+                    row += 1;
+                    col = 0;
+                }
+            }
+        } else {
+            // Backward movement (Alt+b)
+            let line_opt = self.buffer.get_line(row);
+
+            if line_opt.is_none() || line_opt.unwrap().is_empty() || col == 0 {
+                // At line start or empty line - go to previous non-empty line
+                if row > 0 {
+                    let mut new_row = row - 1;
+
+                    // Find previous non-empty line
+                    loop {
+                        if let Some(line) = self.buffer.get_line(new_row) {
+                            if !line.is_empty() {
+                                row = new_row;
+                                col = line.len().saturating_sub(1);
+
+                                // Find word start in that line
+                                col = EditorState::find_word_start(line, col);
+                                break;
+                            }
+                        }
+
+                        if new_row == 0 {
+                            break;
+                        }
+                        new_row -= 1;
+                    }
+                }
+            } else {
+                // Within a line
+                let line = line_opt.unwrap();
+
+                // Handle cursor after end of line
+                if col >= line.len() {
+                    col = line.len().saturating_sub(1);
+                }
+
+                // Check if at word start
+                let at_word_start = col < line.len()
+                    && Self::is_alnum(line[col])
+                    && (col == 0 || !Self::is_alnum(line[col - 1]));
+
+                // If at word start, move back
+                if at_word_start && col > 0 {
+                    col -= 1;
+                }
+
+                // Find start of current/previous word
+                col = EditorState::find_word_start(line, col);
+            }
+        }
+
+        self.file_row = row;
+        self.file_col = col;
+        self.preferred_col = col;
+    }
+
+    // Move cursor forward by one word
+    pub(in crate::editor) fn cursor_word_forward(&mut self) {
+        self.find_word_boundary(true);
+    }
+
+    // Move cursor backward by one word
+    pub(in crate::editor) fn cursor_word_backward(&mut self) {
+        self.find_word_boundary(false);
     }
 
     pub(in crate::editor) fn cursor_home(&mut self) {
@@ -825,6 +956,125 @@ pub mod tests {
     use crate::editor::file_buffer::tests::create_test_file_buffer;
 
     use super::*;
+
+    #[test]
+    fn test_word_movement() {
+        use crate::terminal::tests::{disable_test_mode, enable_test_mode};
+        // Enable test mode to prevent terminal output
+        enable_test_mode();
+
+        // Create a test buffer with simple content
+        let test_content = b"word1 word2\nword3 word4";
+
+        // Create editor state
+        let mut winsize = Winsize::new();
+        winsize.rows = 10;
+        winsize.cols = 40;
+        let mut state = EditorState::new(winsize, &[0; MAX_PATH]);
+        state.buffer = create_test_file_buffer(test_content);
+
+        // Starting position
+        state.file_row = 0;
+        state.file_col = 0;
+
+        // Test forward word movement
+        let orig_col = state.file_col;
+        state.cursor_word_forward();
+        assert!(
+            state.file_col > orig_col,
+            "Word forward should move cursor forward"
+        );
+
+        // Go to second line
+        state.file_row = 1;
+        state.file_col = 0;
+
+        // Test backward word movement
+        state.cursor_word_backward();
+        assert_eq!(
+            state.file_row, 0,
+            "Word backward from line start should move to previous line"
+        );
+
+        // Clean up
+        disable_test_mode();
+    }
+
+    #[test]
+    fn test_multiple_word_backward_movements() {
+        use crate::terminal::tests::{disable_test_mode, enable_test_mode};
+
+        // Enable test mode to prevent terminal output
+        enable_test_mode();
+
+        // Create a test buffer with a line containing multiple words
+        let test_content = b"first second third fourth fifth";
+
+        // Create editor state
+        let mut winsize = Winsize::new();
+        winsize.rows = 10;
+        winsize.cols = 40;
+        let mut state = EditorState::new(winsize, &[0; MAX_PATH]);
+        state.buffer = create_test_file_buffer(test_content);
+
+        // Position cursor at the end of the line
+        state.file_row = 0;
+        state.file_col = test_content.len(); // Position at the end of the line
+
+        // Get positions of each word for verification
+        let text = std::str::from_utf8(test_content).unwrap();
+        let fifth_pos = text.find("fifth").unwrap();
+        let fourth_pos = text.find("fourth").unwrap();
+        let third_pos = text.find("third").unwrap();
+        let second_pos = text.find("second").unwrap();
+        let first_pos = text.find("first").unwrap();
+
+        // First backward movement should go to the beginning of "fifth"
+        state.cursor_word_backward();
+        assert_eq!(
+            state.file_col, fifth_pos,
+            "First movement should go to beginning of 'fifth'"
+        );
+
+        // Second backward movement should go to the beginning of "fourth"
+        state.cursor_word_backward();
+        assert_eq!(
+            state.file_col, fourth_pos,
+            "Second movement should go to beginning of 'fourth'"
+        );
+
+        // Third backward movement should go to the beginning of "third"
+        state.cursor_word_backward();
+        assert_eq!(
+            state.file_col, third_pos,
+            "Third movement should go to beginning of 'third'"
+        );
+
+        // Fourth backward movement should go to the beginning of "second"
+        state.cursor_word_backward();
+        assert_eq!(
+            state.file_col, second_pos,
+            "Fourth movement should go to beginning of 'second'"
+        );
+
+        // Fifth backward movement should go to the beginning of "first"
+        state.cursor_word_backward();
+        assert_eq!(
+            state.file_col, first_pos,
+            "Fifth movement should go to beginning of 'first'"
+        );
+
+        // One more backward movement at the beginning of the line should do nothing
+        // since we're at the start of the line already
+        state.cursor_word_backward();
+        assert_eq!(
+            state.file_col, 0,
+            "No movement should occur at the beginning of the line"
+        );
+
+        // Clean up
+        disable_test_mode();
+    }
 
     #[test]
     fn test_update_winsize() {
@@ -1143,6 +1393,115 @@ pub mod tests {
             assert_eq!(crate::terminal::tests::TEST_BUFFER[0], b'\x1b');
         }
 
+        disable_test_mode();
+    }
+
+    #[test]
+    fn test_word_movement_with_empty_lines() {
+        use crate::terminal::tests::{disable_test_mode, enable_test_mode};
+        use std::println; // For debugging in tests
+
+        // Enable test mode to prevent terminal output
+        enable_test_mode();
+
+        // Create a test buffer with empty lines between content
+        let test_content = b"word1 word2\n\n\nword3 word4\n\nword5";
+
+        // Debug print the content to understand structure
+        println!(
+            "Test content as ASCII: {:?}",
+            std::str::from_utf8(test_content).unwrap()
+        );
+
+        // Create editor state first for debugging line counts
+        let mut winsize = Winsize::new();
+        winsize.rows = 10;
+        winsize.cols = 40;
+        let mut debug_state = EditorState::new(winsize.clone(), &[0; MAX_PATH]);
+        debug_state.buffer = create_test_file_buffer(test_content);
+
+        // Debug line count and content
+        let line_count = debug_state.buffer.count_lines();
+        println!("Total line count: {line_count}");
+
+        // Print content of each line for debugging
+        for i in 0..line_count {
+            if let Some(line) = debug_state.buffer.get_line(i) {
+                println!("Line {}: '{}'", i, std::str::from_utf8(line).unwrap());
+            } else {
+                println!("Line {i}: <none>");
+            }
+        }
+
+        // Create the real editor state for testing
+        let mut winsize = Winsize::new();
+        winsize.rows = 10;
+        winsize.cols = 40;
+        let mut state = EditorState::new(winsize, &[0; MAX_PATH]);
+        state.buffer = create_test_file_buffer(test_content);
+
+        // Test 1: Forward movement on first line
+        state.file_row = 0;
+        state.file_col = 0; // At beginning of "word1"
+
+        // First movement should go to end of "word1"
+        state.cursor_word_forward();
+        println!(
+            "After first movement: row={}, col={}",
+            state.file_row, state.file_col
+        );
+        assert_eq!(state.file_col, 5, "Should move to end of 'word1'");
+
+        // Second movement should move to empty line 1
+        state.cursor_word_forward();
+        println!(
+            "After second movement: row={}, col={}",
+            state.file_row, state.file_col
+        );
+        assert_eq!(state.file_row, 1, "Should move to the first empty line");
+        assert_eq!(
+            state.file_col, 0,
+            "Should be at beginning of the empty line"
+        );
+
+        // Third movement should move to empty line 2
+        state.cursor_word_forward();
+        println!(
+            "After third movement: row={}, col={}",
+            state.file_row, state.file_col
+        );
+        assert_eq!(state.file_row, 2, "Should move to the second empty line");
+
+        // Fourth movement should move to line with "word3"
+        state.cursor_word_forward();
+        assert_eq!(state.file_row, 3, "Should move to line with word3");
+        assert_eq!(
+            state.file_col, 0,
+            "Should be at beginning of line with word3"
+        );
+
+        // Test 2: Backward movement from an empty line
+        state.file_row = 2; // Position on an empty line
+        state.file_col = 0;
+
+        // Backward movement should skip to end of "word2" on first line
+        state.cursor_word_backward();
+        assert_eq!(state.file_row, 0, "Should move up to non-empty line");
+        assert_eq!(state.file_col, 6, "Should be at the start of 'word2'");
+
+        // Test 3: Forward movement from an empty line
+        state.file_row = 4; // Position on the last empty line
+        state.file_col = 0;
+
+        // Forward movement should go to the beginning of "word5" line
+        state.cursor_word_forward();
+        assert_eq!(state.file_row, 5, "Should move to the last line");
+        assert_eq!(
+            state.file_col, 0,
+            "Should be at the beginning of the word5 line"
+        );
+
+        // Clean up
         disable_test_mode();
     }
 }

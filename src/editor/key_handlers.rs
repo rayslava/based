@@ -35,6 +35,8 @@ pub(in crate::editor) enum Key {
     LastChar,
     ExitSearch,
     OpenLine,
+    WordForward,  // Alt+f
+    WordBackward, // Alt+b
     Combination([u8; 2]),
 }
 
@@ -52,6 +54,10 @@ fn process_escape_sequence() -> Key {
         b'>' => Key::LastChar,
         // Alt+v for PageUp (Emacs-style)
         b'v' => Key::PageUp,
+        // Alt+f for forward word
+        b'f' => Key::WordForward,
+        // Alt+b for backward word
+        b'b' => Key::WordBackward,
 
         // Standard escape sequences starting with ESC [
         b'[' => {

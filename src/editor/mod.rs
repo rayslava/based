@@ -121,6 +121,8 @@ fn process_cursor_key(key: Key, state: &mut EditorState) -> SysResult {
         Key::PageDown => state.page_down(),
         Key::FirstChar => state.cursor_first_char(),
         Key::LastChar => state.cursor_last_char(),
+        Key::WordForward => state.cursor_word_forward(),
+        Key::WordBackward => state.cursor_word_backward(),
         Key::OpenLine => {
             if state.file_col == 0 {
                 // If at beginning of line, insert a newline above
@@ -394,6 +396,8 @@ fn process_normal_key(state: &mut EditorState, key: Key, running: &mut bool) -> 
         | Key::PageDown
         | Key::FirstChar
         | Key::LastChar
+        | Key::WordForward
+        | Key::WordBackward
         | Key::Enter
         | Key::Backspace
         | Key::Delete
