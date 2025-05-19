@@ -34,6 +34,7 @@ pub(in crate::editor) enum Key {
     FirstChar,
     LastChar,
     ExitSearch,
+    OpenLine,
     Combination([u8; 2]),
 }
 
@@ -191,6 +192,7 @@ pub(in crate::editor) fn read_key() -> Option<Key> {
         7 => Some(Key::ExitSearch),     // C-g (exit-search-mode)
         12 => Some(Key::Refresh),       // C-l (refresh screen)
         14 => Some(Key::ArrowDown),     // C-n (next-line)
+        15 => Some(Key::OpenLine),      // C-o (open-line)
         16 => Some(Key::ArrowUp),       // C-p (previous-line)
         18 => Some(Key::ReverseSearch), // C-r (reverse-search)
         19 => Some(Key::Search),        // C-s (search)

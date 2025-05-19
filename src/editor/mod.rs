@@ -109,6 +109,19 @@ fn process_cursor_key(key: Key, state: &mut EditorState) -> SysResult {
         Key::PageDown => state.page_down(),
         Key::FirstChar => state.cursor_first_char(),
         Key::LastChar => state.cursor_last_char(),
+        Key::OpenLine => {
+            // Insert a newline at the beginning of the current line
+            if let Err(e) = state.buffer.insert_newline(state.file_row, 0) {
+                state.print_error(match e {
+                    FileBufferError::BufferFull => "Buffer is full",
+                    _ => "Failed to insert newline",
+                })?;
+                return Ok(0);
+            }
+
+            // Keep cursor in same position on current line (which is now one row down)
+            // The file_row stays the same because the line was inserted above
+        }
         Key::Enter => {
             // Insert a newline at the current cursor position
             if let Err(e) = state.buffer.insert_newline(state.file_row, state.file_col) {
@@ -374,7 +387,8 @@ fn process_normal_key(state: &mut EditorState, key: Key, running: &mut bool) -> 
         | Key::LastChar
         | Key::Enter
         | Key::Backspace
-        | Key::Delete => {
+        | Key::Delete
+        | Key::OpenLine => {
             process_cursor_key(key, state)?;
         }
         Key::Char(_) | Key::Combination(_) => {
