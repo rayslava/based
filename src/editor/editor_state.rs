@@ -75,6 +75,7 @@ impl EditorState {
         self.search.reverse = reverse;
         self.search.query_len = 0;
         self.search.match_len = 0; // Reset match length
+        self.search.case_sensitive = false; // Default to case-insensitive
 
         // Clear the query array
         let mut i = 0;
@@ -83,12 +84,29 @@ impl EditorState {
             i += 1;
         }
 
-        // Show search prompt with appropriate direction indicator
+        // Show search prompt with appropriate direction indicator and case sensitivity
+        let case_text = if self.search.case_sensitive {
+            " (case-sensitive): "
+        } else {
+            " (case-insensitive): "
+        };
 
         if reverse {
-            self.print_message("Reverse search: ")
+            self.print_status(|| {
+                let mut inner_result = puts("Reverse search");
+                if inner_result.is_ok() {
+                    inner_result = puts(case_text);
+                }
+                inner_result
+            })
         } else {
-            self.print_message("Search: ")
+            self.print_status(|| {
+                let mut inner_result = puts("Search");
+                if inner_result.is_ok() {
+                    inner_result = puts(case_text);
+                }
+                inner_result
+            })
         }
     }
 
@@ -224,9 +242,18 @@ impl EditorState {
 
                 // Display appropriate search prompt based on direction
                 if self.search.reverse {
-                    inner_result = puts("Reverse search: ");
+                    inner_result = puts("Reverse search");
                 } else {
-                    inner_result = puts("Search: ");
+                    inner_result = puts("Search");
+                }
+
+                // Show case sensitivity status
+                if inner_result.is_ok() {
+                    if self.search.case_sensitive {
+                        inner_result = puts(" (case-sensitive): ");
+                    } else {
+                        inner_result = puts(" (case-insensitive): ");
+                    }
                 }
 
                 // Check if prompt was displayed successfully
@@ -271,9 +298,18 @@ impl EditorState {
 
             // Display appropriate search prompt based on new direction
             if self.search.reverse {
-                inner_result = puts("Reverse search: ");
+                inner_result = puts("Reverse search");
             } else {
-                inner_result = puts("Search: ");
+                inner_result = puts("Search");
+            }
+
+            // Show case sensitivity status
+            if inner_result.is_ok() {
+                if self.search.case_sensitive {
+                    inner_result = puts(" (case-sensitive): ");
+                } else {
+                    inner_result = puts(" (case-insensitive): ");
+                }
             }
 
             // Display the query text
@@ -297,6 +333,56 @@ impl EditorState {
         }
     }
 
+    // Toggle case sensitivity in search mode
+    pub(in crate::editor) fn toggle_search_case_sensitivity(&mut self) -> SysResult {
+        // Only proceed if in search mode
+        if !self.search.mode {
+            return Ok(0);
+        }
+
+        // Toggle case sensitivity
+        self.search.toggle_case_sensitivity();
+
+        // Update the status line to show the case sensitivity state
+        let result = self.print_status(|| {
+            let mut inner_result;
+
+            // Display appropriate search prompt
+            if self.search.reverse {
+                inner_result = puts("Reverse search");
+            } else {
+                inner_result = puts("Search");
+            }
+
+            // Show case sensitivity status
+            if inner_result.is_ok() {
+                if self.search.case_sensitive {
+                    inner_result = puts(" (case-sensitive): ");
+                } else {
+                    inner_result = puts(" (case-insensitive): ");
+                }
+            }
+
+            // Display the query text
+            if inner_result.is_ok() {
+                inner_result =
+                    write_unchecked(STDOUT, self.search.query.as_ptr(), self.search.query_len);
+            }
+
+            if inner_result.is_ok() {
+                inner_result = Ok(0);
+            }
+            inner_result
+        });
+
+        if result.is_ok() && self.search.query_len > 0 {
+            // Update the search to reflect the new case sensitivity
+            self.update_search()
+        } else {
+            result
+        }
+    }
+
     // Remove the last character from the search query
     pub(in crate::editor) fn remove_search_char(&mut self) -> SysResult {
         // Initialize result to Ok(0), will be updated if needed
@@ -313,9 +399,18 @@ impl EditorState {
 
                 // Display appropriate search prompt based on direction
                 if self.search.reverse {
-                    inner_result = puts("Reverse search: ");
+                    inner_result = puts("Reverse search");
                 } else {
-                    inner_result = puts("Search: ");
+                    inner_result = puts("Search");
+                }
+
+                // Show case sensitivity status
+                if inner_result.is_ok() {
+                    if self.search.case_sensitive {
+                        inner_result = puts(" (case-sensitive): ");
+                    } else {
+                        inner_result = puts(" (case-insensitive): ");
+                    }
                 }
 
                 // Check if prompt was displayed successfully
@@ -772,14 +867,8 @@ impl EditorState {
             puts(" Search: ")?;
             write_buf(&self.search.query[..self.search.query_len])?;
         }
-        // Clear to the end of line (makes sure status bar fills whole width)
-        // ESC [ K - Clear from cursor to end of line
         clear_line()?;
-
-        // Reset colors
         reset_colors()?;
-
-        // Restore cursor position
         restore_cursor()
     }
 

@@ -407,7 +407,9 @@ fn process_normal_key(state: &mut EditorState, key: Key, running: &mut bool) -> 
         Key::Char(_) | Key::Combination(_) => {
             process_cursor_key(key, state)?;
         }
-        Key::Escape | Key::ExitSearch => {}
+        Key::Escape | Key::ExitSearch | Key::ToggleCase => {
+            // We'll ignore these keys in normal mode
+        }
     }
 
     Ok(0)
@@ -512,7 +514,10 @@ pub fn run_editor() -> Result<(), EditorError> {
     let result = (|| {
         while running {
             if let Some(key) = read_key() {
-                if state.search.mode {
+                // First check specifically for Alt+c in search mode to toggle case sensitivity
+                if state.search.mode && key == Key::ToggleCase {
+                    state.toggle_search_case_sensitivity()?;
+                } else if state.search.mode {
                     process_search_key(&mut state, key)?;
                 } else {
                     process_normal_key(&mut state, key, &mut running)?;

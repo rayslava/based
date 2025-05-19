@@ -35,8 +35,9 @@ pub(in crate::editor) enum Key {
     LastChar,
     ExitSearch,
     OpenLine,
-    WordForward,  // Alt+f
-    WordBackward, // Alt+b
+    WordForward,
+    WordBackward,
+    ToggleCase,
     Combination([u8; 2]),
 }
 
@@ -58,6 +59,8 @@ fn process_escape_sequence() -> Key {
         b'f' => Key::WordForward,
         // Alt+b for backward word
         b'b' => Key::WordBackward,
+        // Alt+c for toggling case sensitivity in search
+        b'c' => Key::ToggleCase,
 
         // Standard escape sequences starting with ESC [
         b'[' => {

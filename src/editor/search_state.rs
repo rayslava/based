@@ -5,6 +5,7 @@ use crate::syscall::MAX_PATH;
 pub(in crate::editor) struct SearchState {
     pub(in crate::editor) mode: bool,    // Whether we're in search mode
     pub(in crate::editor) reverse: bool, // Whether we're in reverse search mode
+    pub(in crate::editor) case_sensitive: bool, // Whether search is case-sensitive
     pub(in crate::editor) query: [u8; MAX_PATH], // Search query string
     pub(in crate::editor) query_len: usize, // Length of the search query
     pub(in crate::editor) orig_row: usize, // Original row position before search
@@ -19,6 +20,7 @@ impl SearchState {
         Self {
             mode: false,
             reverse: false,
+            case_sensitive: false,
             query: [0u8; MAX_PATH],
             query_len: 0,
             orig_row: 0,
@@ -33,6 +35,11 @@ impl SearchState {
         self.reverse = !self.reverse;
     }
 
+    pub(in crate::editor) fn toggle_case_sensitivity(&mut self) {
+        // Print a message indicating whether we're turning case sensitivity on or off
+        self.case_sensitive = !self.case_sensitive;
+    }
+
     // Check if query matches at a specific position in a line
     fn is_match_at(&self, line: &[u8], pos: usize) -> bool {
         if pos + self.query_len > line.len() {
@@ -42,8 +49,24 @@ impl SearchState {
         let query = &self.query[..self.query_len];
         let mut j = 0;
         while j < self.query_len {
-            if line[pos + j] != query[j] {
-                return false;
+            if self.case_sensitive {
+                if line[pos + j] != query[j] {
+                    return false;
+                }
+            } else {
+                let c1 = if line[pos + j] >= b'A' && line[pos + j] <= b'Z' {
+                    line[pos + j] + 32
+                } else {
+                    line[pos + j]
+                };
+                let c2 = if query[j] >= b'A' && query[j] <= b'Z' {
+                    query[j] + 32
+                } else {
+                    query[j]
+                };
+                if c1 != c2 {
+                    return false;
+                }
             }
             j += 1;
         }
@@ -341,12 +364,12 @@ pub mod tests {
         // Verify third match (in "Search here")
         assert_eq!(
             state.search.match_row,
-            3, // Actual value in our implementation
-            "Third match should wrap around to the last match again"
+            1, // This is the "Search here" line in our file
+            "Third match should wrap around to the 'Search here' line"
         );
         assert_eq!(
-            state.search.match_col, 5,
-            "Third match should be in 'Last search line'"
+            state.search.match_col, 0,
+            "Third match should be at the start of 'Search here'"
         );
 
         // Cancel search and verify we return to original position
@@ -370,6 +393,60 @@ pub mod tests {
 
         // Clean up test mode
         disable_test_mode();
+    }
+
+    #[test]
+    fn test_case_insensitive_search() {
+        // Create a buffer with mixed case content for testing
+        let content = b"First line\nSecond SEARCH term\nThird line\nsearch match\n";
+        let buffer = create_test_file_buffer(content);
+
+        // Create a search state
+        let mut search_state = SearchState::new();
+
+        // Set up a search query "search" (lowercase)
+        search_state.query[0] = b's';
+        search_state.query[1] = b'e';
+        search_state.query[2] = b'a';
+        search_state.query[3] = b'r';
+        search_state.query[4] = b'c';
+        search_state.query[5] = b'h';
+        search_state.query_len = 6;
+
+        // Test case-insensitive search (default)
+        assert!(
+            !search_state.case_sensitive,
+            "Search should be case-insensitive by default"
+        );
+
+        let result = search_state.find_substring_forward(&buffer, 0, 0);
+        assert!(result.is_some(), "Should find case-insensitive match");
+
+        if let Some((row, col, len)) = result {
+            assert_eq!(row, 1, "Should find uppercase 'SEARCH' on line 2");
+            assert_eq!(col, 7, "Should match at correct position");
+            assert_eq!(len, 6, "Match length should be 6");
+        }
+
+        // Toggle to case-sensitive search
+        search_state.toggle_case_sensitivity();
+        assert!(
+            search_state.case_sensitive,
+            "Search should be case-sensitive after toggle"
+        );
+
+        // Now search should only find lowercase 'search'
+        let result = search_state.find_substring_forward(&buffer, 0, 0);
+        assert!(result.is_some(), "Should find case-sensitive match");
+
+        if let Some((row, col, len)) = result {
+            assert_eq!(
+                row, 3,
+                "Should skip uppercase 'SEARCH' and find lowercase 'search' on line 4"
+            );
+            assert_eq!(col, 0, "Should match at correct position");
+            assert_eq!(len, 6, "Match length should be 6");
+        }
     }
 
     #[test]
