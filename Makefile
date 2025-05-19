@@ -30,4 +30,4 @@ fix:
 	cargo clippy --fix --all-targets --all-features --allow-dirty --allow-staged -- -W clippy::pedantic
 
 size: release
-	wc -c based
+	stat -c%s based

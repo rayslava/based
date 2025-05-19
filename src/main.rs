@@ -26,7 +26,7 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 /// No one is safe once this program is started.
 #[cfg(all(not(test), not(debug_assertions)))]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn _start() {
+pub unsafe extern "C" fn _start() -> ! {
     // Need to align stack to make sse work
     unsafe { core::arch::asm!("and rsp, -64", options(nomem, nostack)) };
 

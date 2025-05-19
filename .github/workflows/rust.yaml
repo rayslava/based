@@ -9,13 +9,13 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  TARPAULIN_VER: 0.32.3
+  TARPAULIN_VER: 0.32.5
 
 jobs:
   build:
     runs-on: ubuntu-latest
     container:
-      image: rust:1.86
+      image: rust:1.87
       options: --security-opt seccomp=unconfined
 
     steps:
