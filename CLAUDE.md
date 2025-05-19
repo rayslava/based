@@ -36,6 +36,7 @@ and no libc is used either. Only Linux syscalls.
   module and nowhere else.
 - Write all the code in a statement-oriented style.
 - Run `make test` after finishing changes to check that tests still pass.
+- Never exclude the newly created functions from the test coverage.
 
 # Build process
 

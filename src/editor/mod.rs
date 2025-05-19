@@ -90,10 +90,22 @@ fn open_file(file_path: &[u8]) -> Result<FileBuffer, EditorError> {
     Ok(buffer)
 }
 
-#[cfg(not(tarpaulin_include))]
-fn process_cursor_key(key: Key, state: &mut EditorState) -> SysResult {
-    // Skip normal processing if in search mode
+fn insert_newline(state: &mut EditorState, row: usize, col: usize) -> Result<(), SysResult> {
+    if let Err(e) = state.buffer.insert_newline(row, col) {
+        let result = state.print_error(match e {
+            FileBufferError::BufferFull => "Buffer is full",
+            _ => "Failed to insert newline",
+        });
 
+        if result.is_err() {
+            return Err(result);
+        }
+        return Err(Ok(0));
+    }
+    Ok(())
+}
+
+fn process_cursor_key(key: Key, state: &mut EditorState) -> SysResult {
     if state.search.mode {
         return Ok(0);
     }
@@ -110,36 +122,40 @@ fn process_cursor_key(key: Key, state: &mut EditorState) -> SysResult {
         Key::FirstChar => state.cursor_first_char(),
         Key::LastChar => state.cursor_last_char(),
         Key::OpenLine => {
-            // Insert a newline at the beginning of the current line
-            if let Err(e) = state.buffer.insert_newline(state.file_row, 0) {
-                state.print_error(match e {
-                    FileBufferError::BufferFull => "Buffer is full",
-                    _ => "Failed to insert newline",
-                })?;
-                return Ok(0);
+            if state.file_col == 0 {
+                // If at beginning of line, insert a newline above
+                match insert_newline(state, state.file_row, 0) {
+                    Ok(()) => {}
+                    Err(result) => return result,
+                }
+                // Cursor stays at the same position
+            } else {
+                // Otherwise, insert a newline at the current cursor position
+                match insert_newline(state, state.file_row, state.file_col) {
+                    Ok(()) => {}
+                    Err(result) => return result,
+                }
+                // Move cursor to the beginning of the next line
+                state.file_row += 1;
+                state.file_col = 0;
             }
-
-            // Keep cursor in same position on current line (which is now one row down)
-            // The file_row stays the same because the line was inserted above
         }
         Key::Enter => {
-            // Insert a newline at the current cursor position
-            if let Err(e) = state.buffer.insert_newline(state.file_row, state.file_col) {
-                state.print_error(match e {
-                    FileBufferError::BufferFull => "Buffer is full",
-                    _ => "Failed to insert newline",
-                })?;
-                return Ok(0);
+            match insert_newline(state, state.file_row, state.file_col) {
+                Ok(()) => {}
+                Err(result) => return result,
             }
-
-            // Move cursor to beginning of next line
             state.file_row += 1;
             state.file_col = 0;
         }
         Key::Backspace => {
-            // Delete the character before the cursor
             if state.file_col > 0 || state.file_row > 0 {
-                // Try to delete the character
+                let prev_line_length = if state.file_col == 0 && state.file_row > 0 {
+                    state.buffer.line_length(state.file_row - 1, state.tab_size)
+                } else {
+                    0
+                };
+
                 if let Err(e) = state.buffer.backspace_at(state.file_row, state.file_col) {
                     state.print_error(match e {
                         FileBufferError::InvalidOperation => "Can't delete at this position",
@@ -148,24 +164,19 @@ fn process_cursor_key(key: Key, state: &mut EditorState) -> SysResult {
                     return Ok(0);
                 }
 
-                // Update cursor position
                 if state.file_col > 0 {
                     state.file_col -= 1;
                 } else if state.file_row > 0 {
-                    // We've joined the current line with the previous one
-                    // Move cursor to the end of the previous line
                     state.file_row -= 1;
-                    state.file_col = state.buffer.line_length(state.file_row, state.tab_size);
+                    state.file_col = prev_line_length;
                 }
             }
         }
         Key::Delete => {
-            // Delete the character at the cursor position
             let line_count = state.buffer.count_lines();
             let current_line_len = state.buffer.line_length(state.file_row, state.tab_size);
 
             if state.file_col < current_line_len {
-                // Normal case - delete character at cursor in the same line
                 if let Err(e) = state.buffer.delete_char(state.file_row, state.file_col) {
                     state.print_error(match e {
                         FileBufferError::InvalidOperation => "Can't delete at this position",
@@ -173,7 +184,6 @@ fn process_cursor_key(key: Key, state: &mut EditorState) -> SysResult {
                     })?;
                     return Ok(0);
                 }
-                // Cursor position stays the same
             } else if state.file_row + 1 < line_count {
                 // At end of line - join with next line by deleting the newline
                 if let Some(line_end) = state.buffer.find_line_end(state.file_row) {
@@ -189,7 +199,6 @@ fn process_cursor_key(key: Key, state: &mut EditorState) -> SysResult {
             }
         }
         Key::Char(ch) => {
-            // Insert the character at the current cursor position
             if let Err(e) = state.buffer.insert_char(state.file_row, state.file_col, ch) {
                 state.print_error(match e {
                     FileBufferError::BufferFull => "Buffer is full",
