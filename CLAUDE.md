@@ -37,6 +37,15 @@ and no libc is used either. Only Linux syscalls.
 - Write all the code in a statement-oriented style.
 - Run `make test` after finishing changes to check that tests still pass.
 - Never exclude the newly created functions from the test coverage.
+- Never disable any clippy checks and warnings, only fix the code.
+- Never ever add #[allow(clippy::*)] for the code that is used out of the
+  tests. Never allow any warnings in production code.
+- Never do some additional or supplementary tasks, only complete the explicit
+  requests.
+- Never use the #[allow(dead_code)]. Eliminate all the unneded code.
+- Always write the most idiomatic and short Rust code, use pattern matching,
+  write the statement-based code. Split the code into small and easy-readble
+  functions.
 
 # Build process
 

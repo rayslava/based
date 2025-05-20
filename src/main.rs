@@ -40,7 +40,7 @@ pub unsafe extern "C" fn _start() -> ! {
 fn main() {
     match run() {
         Ok(()) => {}
-        Err(_) => exit(1),
+        Err(e) => exit(e),
     }
 }
 

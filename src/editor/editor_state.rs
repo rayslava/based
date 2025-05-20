@@ -7,7 +7,7 @@ use crate::{
     termios::Winsize,
 };
 
-use super::{FileBuffer, SearchState};
+use super::{FileBuffer, SearchState, SyntaxHighlighter, syntax_highlight::HighlightColor};
 
 pub(in crate::editor) struct EditorState {
     pub(in crate::editor) winsize: Winsize, // Terminal window size
@@ -22,6 +22,7 @@ pub(in crate::editor) struct EditorState {
     pub(in crate::editor) filename: [u8; MAX_PATH], // Current file name
     pub(in crate::editor) buffer: FileBuffer,
     pub(in crate::editor) search: SearchState, // Search state
+    pub(in crate::editor) highlighter: SyntaxHighlighter, // Syntax highlighter
 }
 
 impl EditorState {
@@ -29,6 +30,10 @@ impl EditorState {
     pub(in crate::editor) fn new(winsize: Winsize, filename: &[u8; MAX_PATH]) -> Self {
         let mut own_filename = [0u8; MAX_PATH];
         own_filename[..filename.len()].copy_from_slice(filename);
+
+        // Create and initialize the syntax highlighter
+        let mut highlighter = SyntaxHighlighter::new();
+        highlighter.detect_file_type(filename);
 
         Self {
             winsize,
@@ -48,6 +53,7 @@ impl EditorState {
                 modified: false,
             },
             search: SearchState::new(),
+            highlighter,
         }
     }
 
@@ -161,14 +167,37 @@ impl EditorState {
                         // Start by assuming the match is valid
                         current_match_valid = true;
 
-                        // Compare each character with the updated query
+                        // Compare each character with the updated query, respecting case sensitivity setting
                         let mut j = 0;
                         while j < self.search.query_len {
-                            if self.file_col + j >= line.len()
-                                || line[self.file_col + j] != query[j]
-                            {
-                                current_match_valid = false;
-                                break;
+                            let line_ch = line[self.file_col + j];
+                            let query_ch = query[j];
+
+                            // If case-sensitive, compare characters directly
+                            // If case-insensitive, convert both to lowercase before comparing
+                            if self.search.case_sensitive {
+                                if line_ch != query_ch {
+                                    current_match_valid = false;
+                                    break;
+                                }
+                            } else {
+                                // Convert characters to lowercase before comparing
+                                let line_ch_lower = if line_ch.is_ascii_uppercase() {
+                                    line_ch + 32 // Convert to lowercase
+                                } else {
+                                    line_ch
+                                };
+
+                                let query_ch_lower = if query_ch.is_ascii_uppercase() {
+                                    query_ch + 32 // Convert to lowercase
+                                } else {
+                                    query_ch
+                                };
+
+                                if line_ch_lower != query_ch_lower {
+                                    current_match_valid = false;
+                                    break;
+                                }
                             }
                             j += 1;
                         }
@@ -376,8 +405,34 @@ impl EditorState {
         });
 
         if result.is_ok() && self.search.query_len > 0 {
+            // Reset the match length to force a new search
+            self.search.match_len = 0;
+
             // Update the search to reflect the new case sensitivity
-            self.update_search()
+            // Start a fresh search from current position
+            let search_result = if self.search.reverse {
+                self.search
+                    .find_substring_backward(&self.buffer, self.file_row, self.file_col)
+            } else {
+                self.search
+                    .find_substring_forward(&self.buffer, self.file_row, self.file_col)
+            };
+
+            if let Some((row, col, len)) = search_result {
+                // Found a match with new case sensitivity setting
+                self.search.match_row = row;
+                self.search.match_col = col;
+                self.search.match_len = len;
+                self.file_row = row;
+                self.file_col = col;
+                self.scroll_to_cursor();
+                self.draw_screen()?;
+            } else {
+                // No match found with new case sensitivity setting
+                self.print_error("No match found")?;
+            }
+
+            Ok(0)
         } else {
             result
         }
@@ -872,133 +927,193 @@ impl EditorState {
         restore_cursor()
     }
 
-    pub(in crate::editor) fn draw_screen(&self) -> SysResult {
+    // Handle tabs in the editor display - convert to spaces
+    fn handle_tab_display(
+        &self,
+        _tab_byte: u8,
+        col: &mut usize,
+        screen_col: &mut usize,
+        chars_to_skip: &mut usize,
+    ) -> SysResult {
+        let spaces = self.tab_size - (*col % self.tab_size);
+        *col += spaces;
+
+        // Skip if we're still scrolled horizontally
+        if *chars_to_skip > 0 {
+            if *chars_to_skip >= spaces {
+                *chars_to_skip -= spaces;
+                return Ok(0);
+            }
+
+            // Draw partial spaces after the horizontal scroll point
+            let visible_spaces = spaces - *chars_to_skip;
+            for _ in 0..visible_spaces {
+                if *screen_col < self.winsize.cols as usize {
+                    putchar(b' ')?;
+                    *screen_col += 1;
+                } else {
+                    break;
+                }
+            }
+            *chars_to_skip = 0;
+        } else {
+            // Draw spaces for tab
+            for _ in 0..spaces {
+                if *screen_col < self.winsize.cols as usize {
+                    putchar(b' ')?;
+                    *screen_col += 1;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        Ok(0)
+    }
+
+    // Draw line method removed as refactored into draw_line_at_index
+
+    // Historical methods removed
+
+    // Historical methods removed
+
+    pub(in crate::editor) fn draw_screen(&mut self) -> SysResult {
         // Calculate available height for content
         let available_rows = self.editing_rows();
-        // Convert to usize for iterator
         let line_count = self.buffer.count_lines();
 
         // Draw lines from the file buffer
-        // Using a manually bounded loop to avoid clippy warnings
         for i in 0..available_rows {
-            // Position cursor at start of each line
-            // We know i < available_rows_usize which came from a u16, so we can safely convert back
             move_cursor(i, 0)?;
-
             clear_line()?;
-            let file_line_idx = self.scroll_row + i;
 
+            let file_line_idx = self.scroll_row + i;
             if file_line_idx >= line_count {
                 // We're past the end of file, leave the rest of screen empty
                 continue;
             }
 
-            // Get the line from file buffer
-            if let Some(line) = self.buffer.get_line(file_line_idx) {
-                if line.is_empty() {
-                    continue;
-                }
-
-                // Calculate how much to skip from the start (for horizontal scrolling)
-                let mut chars_to_skip = self.scroll_col;
-                let mut col = 0;
-                let mut screen_col = 0;
-
-                // Check if this line contains the search match
-                let is_match_line = self.search.mode
-                    && self.search.query_len > 0
-                    && file_line_idx == self.search.match_row;
-                let match_start = if is_match_line {
-                    self.search.match_col
-                } else {
-                    0
-                };
-                let match_end = if is_match_line {
-                    self.search.match_col + self.search.match_len
-                } else {
-                    0
-                };
-
-                // Display each character in the line
-                for (idx, &byte) in line.iter().enumerate() {
-                    // Track if current character is part of a search match for highlighting
-                    let is_highlight = is_match_line && idx >= match_start && idx < match_end;
-
-                    if byte == 0 {
-                        // Stop at null byte
-                        break;
-                    }
-
-                    // Apply highlighting if this character is part of a match
-                    if is_highlight && chars_to_skip == 0 && screen_col < self.winsize.cols as usize
-                    {
-                        // Set inverted colors for highlighting (reverse video)
-                        set_bg_color(7)?;
-                        set_fg_color(0)?;
-                    }
-
-                    if byte == b'\t' {
-                        // Handle tabs - convert to spaces
-                        let spaces = self.tab_size - (col % self.tab_size);
-                        col += spaces;
-
-                        // Skip if we're still scrolled horizontally
-                        if chars_to_skip > 0 {
-                            if chars_to_skip >= spaces {
-                                chars_to_skip -= spaces;
-                            } else {
-                                // Draw partial spaces after the horizontal scroll point
-                                let visible_spaces = spaces - chars_to_skip;
-                                for _ in 0..visible_spaces {
-                                    if screen_col < self.winsize.cols as usize {
-                                        putchar(b' ')?;
-                                        screen_col += 1;
-                                    } else {
-                                        break;
-                                    }
-                                }
-                                chars_to_skip = 0;
-                            }
-                        } else {
-                            // Draw spaces for tab
-                            for _ in 0..spaces {
-                                if screen_col < self.winsize.cols as usize {
-                                    putchar(b' ')?;
-                                    screen_col += 1;
-                                } else {
-                                    break;
-                                }
-                            }
-                        }
-                    } else {
-                        col += 1;
-
-                        // Only print if we've scrolled past the horizontal skip point
-                        if chars_to_skip > 0 {
-                            chars_to_skip -= 1;
-                        } else if screen_col < self.winsize.cols as usize {
-                            putchar(byte)?;
-                            screen_col += 1;
-                        } else {
-                            break;
-                        }
-                    }
-
-                    // Reset colors after printing a highlighted character
-                    if is_highlight
-                        && chars_to_skip == 0
-                        && screen_col <= self.winsize.cols as usize
-                    {
-                        reset_colors()?;
-                    }
-                }
-                // Ensure colors are reset at the end of each line
-                reset_colors()?;
-            }
+            // Process this line
+            self.draw_line_at_index(file_line_idx)?;
         }
 
         // Move cursor to the correct position
         move_cursor(self.cursor_row, self.cursor_col)?;
+        Ok(0)
+    }
+
+    // Draw a specific line in the buffer by its index
+    fn draw_line_at_index(&mut self, file_line_idx: usize) -> SysResult {
+        // Get the line
+        if let Some(line) = self.buffer.get_line(file_line_idx) {
+            if line.is_empty() {
+                return Ok(0);
+            }
+
+            // Get line info
+            let line_start = self.buffer.find_line_start(file_line_idx).unwrap_or(0);
+
+            // Check for search match
+            let is_match_line = self.search.mode
+                && self.search.query_len > 0
+                && file_line_idx == self.search.match_row;
+
+            let match_start = if is_match_line {
+                self.search.match_col
+            } else {
+                0
+            };
+            let match_end = if is_match_line {
+                self.search.match_col + self.search.match_len
+            } else {
+                0
+            };
+
+            // Calculate how much to skip from the start (for horizontal scrolling)
+            let mut chars_to_skip = self.scroll_col;
+            let mut col = 0;
+            let mut screen_col = 0;
+
+            // Display each character in the line
+            let mut idx = 0;
+            while idx < line.len() {
+                let byte = line[idx];
+
+                if byte == 0 {
+                    // Stop at null byte
+                    break;
+                }
+
+                // Track if current character is part of a search match for highlighting
+                let is_highlight = is_match_line && idx >= match_start && idx < match_end;
+
+                // Get syntax highlight color directly
+                let abs_pos = line_start + idx;
+                let syntax_highlight = self.highlighter.highlight_char(&self.buffer, abs_pos);
+
+                // Apply highlighting if visible
+                if chars_to_skip == 0 && screen_col < self.winsize.cols as usize {
+                    if is_highlight {
+                        // Search match highlighting takes precedence (reverse video)
+                        set_bg_color(7)?;
+                        set_fg_color(0)?;
+                    } else if let HighlightColor::Delimiter = syntax_highlight {
+                        // For delimiters, use cyan
+                        set_fg_color(6)?;
+                    } else {
+                        // Apply regular syntax highlighting based on character type
+                        match syntax_highlight {
+                            HighlightColor::Default | HighlightColor::Delimiter => {} // No color change
+                            HighlightColor::Comment => {
+                                set_fg_color(2)?; // Green for comments
+                            }
+                            HighlightColor::Keyword => {
+                                set_fg_color(4)?; // Blue for keywords
+                                set_bold()?;
+                            }
+                            HighlightColor::String => {
+                                set_fg_color(1)?; // Red for strings
+                            }
+                            HighlightColor::Number => {
+                                set_fg_color(5)?; // Magenta for numbers
+                            }
+                        }
+                    }
+                }
+
+                // Handle the character display
+                if byte == b'\t' {
+                    self.handle_tab_display(byte, &mut col, &mut screen_col, &mut chars_to_skip)?;
+                } else {
+                    col += 1;
+
+                    // Only print if we've scrolled past the horizontal skip point
+                    if chars_to_skip > 0 {
+                        chars_to_skip -= 1;
+                    } else if screen_col < self.winsize.cols as usize {
+                        putchar(byte)?;
+                        screen_col += 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                // Reset colors after printing if needed
+                if (is_highlight || syntax_highlight != HighlightColor::Default)
+                    && chars_to_skip == 0
+                    && screen_col <= self.winsize.cols as usize
+                {
+                    reset_colors()?;
+                }
+
+                // Move to next character
+                idx += 1;
+            }
+
+            // Ensure colors are reset at the end of each line
+            reset_colors()?;
+        }
+
         Ok(0)
     }
 
