@@ -48,14 +48,23 @@ impl FileBuffer {
 
     // Resize the buffer to accommodate more content
     fn resize_buffer(&mut self) -> Result<(), FileBufferError> {
+        const PAGE_SIZE: usize = 4096;
+        const PAGE_MASK: usize = PAGE_SIZE - 1;
+
         let new_capacity = if self.capacity == 0 {
-            4096 // Start with one page if buffer is empty
+            PAGE_SIZE // Start with one page if buffer is empty
         } else {
-            // Add a page
-            ((self.capacity + 4095) & !4095) + usize::from(self.capacity % 4096 == 0) * 4096
+            // Round up to next page boundary and add an extra page if exactly at boundary
+            let aligned = (self.capacity + PAGE_MASK) & !PAGE_MASK;
+            aligned
+                + if self.capacity & PAGE_MASK == 0 {
+                    PAGE_SIZE
+                } else {
+                    0
+                }
         };
 
-        // Allocate new buffer with doubled capacity
+        // Allocate new buffer
         let prot = crate::syscall::PROT_READ | crate::syscall::PROT_WRITE;
         let flags = crate::syscall::MAP_PRIVATE | crate::syscall::MAP_ANONYMOUS;
         let Ok(new_buffer) = crate::syscall::mmap(0, new_capacity, prot, flags, usize::MAX, 0)
@@ -237,125 +246,145 @@ impl FileBuffer {
 
     // Count the number of lines in the file
     pub(in crate::editor) fn count_lines(&self) -> usize {
-        if self.content.is_null() || self.size == 0 {
+        // Early return for null buffer
+        if self.content.is_null() {
             return 0;
         }
 
-        let mut count = 1; // Start with 1 for the first line
-        for i in 0..self.size {
-            let byte = unsafe { *self.content.add(i) };
-            if byte == 0 {
-                // End of file marker
-                break;
-            }
-            if byte == b'\n' {
-                count += 1;
-            }
+        // Empty buffer has one line for editing purposes
+        if self.size == 0 {
+            return 1;
         }
-        count
+
+        // Create a slice view of the buffer content for more efficient iteration
+        let buffer_slice = unsafe { core::slice::from_raw_parts(self.content, self.size) };
+
+        // Count newlines and add 1 (first line doesn't start with a newline)
+        let newline_count = buffer_slice
+            .iter()
+            .take_while(|&&byte| byte != 0) // Stop at null byte if present
+            .filter(|&&byte| byte == b'\n')
+            .count();
+
+        newline_count + 1
     }
 
     pub(in crate::editor) fn find_line_start(&self, line_idx: usize) -> Option<usize> {
-        // For empty files, line 0 is a valid empty line at position 0
+        // For null buffer
         if self.content.is_null() {
             return None;
         }
 
-        // Special case for empty buffer - still allow line 0
-        if self.size == 0 && line_idx == 0 {
+        // Special case for first line (line 0)
+        if line_idx == 0 {
             return Some(0);
         }
 
-        // Normal case for non-empty buffers
-        if self.size > 0 && line_idx == 0 {
-            return Some(0);
+        // Special case for empty buffer - only line 0 exists
+        if self.size == 0 {
+            return None;
         }
 
-        // Find other lines by counting newlines
+        // Find line by counting newlines
         let mut newlines_found = 0;
         let mut pos = 0;
 
-        while pos < self.size {
-            let byte = unsafe { *self.content.add(pos) };
-            if byte == b'\n' {
-                newlines_found += 1;
-                if newlines_found == line_idx {
-                    return Some(pos + 1); // Start of next line
+        // Scan the buffer for newline characters
+        unsafe {
+            while pos < self.size {
+                if *self.content.add(pos) == b'\n' {
+                    newlines_found += 1;
+                    if newlines_found == line_idx {
+                        return Some(pos + 1); // Start of line after newline
+                    }
                 }
+                pos += 1;
             }
-            pos += 1;
         }
+
+        // Line not found
         None
     }
 
     // Find the end position of a specific line (exclusive of newline)
     pub(in crate::editor) fn find_line_end(&self, line_idx: usize) -> Option<usize> {
+        // Get start position of the line
         let start = self.find_line_start(line_idx)?;
 
-        // Special case for empty buffer - line 0 ends at position 0
+        // Special case for empty buffer
         if self.size == 0 && line_idx == 0 {
             return Some(0);
         }
 
-        let mut pos = start;
-        while pos < self.size {
-            let byte = unsafe { *self.content.add(pos) };
+        // Scan forward from start position until we find a newline or end of buffer
+        unsafe {
+            let mut pos = start;
+            while pos < self.size {
+                let byte = *self.content.add(pos);
 
-            if byte == 0 || byte == b'\n' {
-                // End of line or file
-                return Some(pos);
+                if byte == b'\n' || byte == 0 {
+                    return Some(pos);
+                }
+
+                pos += 1;
             }
 
-            pos += 1;
+            // If we reached end of buffer without finding a newline
+            Some(self.size)
         }
-        Some(self.size)
     }
 
     // Get a specific line from the buffer
     pub(in crate::editor) fn get_line(&self, line_idx: usize) -> Option<&[u8]> {
+        // Check for null pointer first
+        if self.content.is_null() {
+            return None;
+        }
+
+        // Handle empty buffer case
+        if self.size == 0 {
+            if line_idx == 0 {
+                // For empty buffer, return an empty slice for line 0
+                return Some(&[]);
+            }
+            return None;
+        }
+
         // Find start and end positions of the line
         let start = self.find_line_start(line_idx)?;
         let end = self.find_line_end(line_idx)?;
 
-        // Special case for empty buffer - return empty slice
-        if self.size == 0 && line_idx == 0 {
-            // Create an empty slice - we need to be careful here since content might be null
-            // but we've already checked in find_line_start that it isn't
-            unsafe {
-                return Some(core::slice::from_raw_parts(self.content, 0));
-            }
-        }
-
-        if start >= end || start >= self.size || end > self.size {
+        // Validate positions
+        if start > end || start >= self.size || end > self.size {
             return None;
         }
 
         // Create a slice directly from pointers
         unsafe {
-            let start_ptr = self.content.add(start);
             let len = end - start;
-            Some(core::slice::from_raw_parts(start_ptr, len))
+            Some(core::slice::from_raw_parts(self.content.add(start), len))
         }
     }
 
     // Get a line's length, treating tabs as the specified number of spaces
     pub(in crate::editor) fn line_length(&self, line_idx: usize, tab_size: usize) -> usize {
-        if let Some(line) = self.get_line(line_idx) {
-            let mut length = 0;
-            for &byte in line {
-                if byte == b'\t' {
-                    // Add spaces until the next tab stop
-                    let spaces_to_add = tab_size - (length % tab_size);
-                    length += spaces_to_add;
-                } else if byte == 0 {
-                    break; // Stop at null byte
-                } else {
-                    length += 1;
+        match self.get_line(line_idx) {
+            Some(line) => {
+                // Calculate expanded length with tabs converted to spaces
+                let mut length = 0;
+                for &byte in line {
+                    match byte {
+                        b'\t' => {
+                            // Calculate spaces needed to reach next tab stop
+                            length += tab_size - (length % tab_size);
+                        }
+                        0 => break, // Stop at null byte
+                        _ => length += 1,
+                    }
                 }
+                length
             }
-            length
-        } else {
-            0
+            None => 0, // Non-existent line has zero length
         }
     }
 }
@@ -541,8 +570,8 @@ pub mod tests {
         let empty_content = b"";
         let buffer = create_test_file_buffer(empty_content);
 
-        // Based on the implementation, empty buffer has 0 lines
-        assert_eq!(buffer.count_lines(), 0, "Empty buffer should have 0 lines");
+        // Empty buffer has 1 line for editing purposes
+        assert_eq!(buffer.count_lines(), 1, "Empty buffer should have 1 line");
 
         // We now allow line 0 to exist in an empty buffer, with position 0
         // This allows inserting at position (0,0) in an empty file
@@ -1085,7 +1114,7 @@ pub mod tests {
 
         // Verify the buffer is initially empty
         assert_eq!(buffer.size, 0, "Initial buffer should be empty");
-        assert_eq!(buffer.count_lines(), 0, "Empty buffer should have 0 lines");
+        assert_eq!(buffer.count_lines(), 1, "Empty buffer should have 1 line");
         assert_eq!(
             buffer.find_line_start(0),
             Some(0),
