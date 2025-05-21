@@ -47,41 +47,27 @@ fn main() {
 fn run() -> Result<(), usize> {
     let mut winsize = Winsize::new();
 
-    if get_winsize(syscall::STDOUT, &mut winsize).is_ok() {
-        puts("Ready to open file using mmap\r\n")?;
-    } else {
-        puts("Could not get terminal size\r\n")?;
-    }
+    get_winsize(syscall::STDOUT, &mut winsize)?;
 
     // Get and save original terminal settings
     let mut orig_termios = Termios::new();
 
-    if get_termios(syscall::STDIN, &mut orig_termios).is_ok() {
-        let mut raw_termios = orig_termios.clone();
-        set_raw_mode(&mut raw_termios);
+    get_termios(syscall::STDIN, &mut orig_termios)?;
+    let mut raw_termios = orig_termios.clone();
 
-        if set_termios(syscall::STDIN, TCSETS, &raw_termios).is_ok() {
-            puts("Entered raw mode. Press q to exit.\r\n")?;
-            puts("Opening file with mmap and displaying its contents.\r\n")?;
+    set_raw_mode(&mut raw_termios);
+    set_termios(syscall::STDIN, TCSETS, &raw_termios)?;
 
-            match run_editor() {
-                Ok(()) => {}
-                Err(e) => {
-                    puts("Error\r\n")?;
-                    match e {
-                        editor::EditorError::SysError(n) => write_number(n),
-                        _ => todo!(),
-                    }
-                }
+    match run_editor() {
+        Ok(()) => {}
+        Err(e) => {
+            puts("Error\r\n")?;
+            match e {
+                editor::EditorError::SysError(n) => write_number(n),
+                _ => todo!(),
             }
-            set_termios(syscall::STDIN, TCSETSW, &orig_termios)?;
-            puts("\r\nExited raw mode\r\n")?;
-        } else {
-            puts("Failed to set raw mode\r\n")?;
         }
-    } else {
-        puts("Failed to get terminal attributes\r\n")?;
     }
-
+    set_termios(syscall::STDIN, TCSETSW, &orig_termios)?;
     Ok(())
 }
