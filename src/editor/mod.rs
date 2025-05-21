@@ -107,115 +107,202 @@ fn insert_newline(state: &mut EditorState, row: usize, col: usize) -> Result<(),
     Ok(())
 }
 
+// Process cursor movement keys that don't modify buffer
+fn process_movement_key(key: Key, state: &mut EditorState) -> bool {
+    match key {
+        Key::ArrowUp => {
+            state.cursor_up();
+            true
+        }
+        Key::ArrowDown => {
+            state.cursor_down();
+            true
+        }
+        Key::ArrowLeft => {
+            state.cursor_left();
+            true
+        }
+        Key::ArrowRight => {
+            state.cursor_right();
+            true
+        }
+        Key::Home => {
+            state.cursor_home();
+            true
+        }
+        Key::End => {
+            state.cursor_end();
+            true
+        }
+        Key::PageUp => {
+            state.page_up();
+            true
+        }
+        Key::PageDown => {
+            state.page_down();
+            true
+        }
+        Key::FirstChar => {
+            state.cursor_first_char();
+            true
+        }
+        Key::LastChar => {
+            state.cursor_last_char();
+            true
+        }
+        Key::WordForward => {
+            state.cursor_word_forward();
+            true
+        }
+        Key::WordBackward => {
+            state.cursor_word_backward();
+            true
+        }
+        _ => false,
+    }
+}
+
+// Handle OpenLine key - insert newline with appropriate cursor positioning
+fn process_open_line(state: &mut EditorState) -> SysResult {
+    if state.file_col == 0 {
+        // If at beginning of line, insert a newline above
+        match insert_newline(state, state.file_row, 0) {
+            Ok(()) => Ok(0),
+            Err(result) => result,
+        }
+        // Cursor stays at the same position
+    } else {
+        // Otherwise, insert a newline at the current cursor position
+        let result = match insert_newline(state, state.file_row, state.file_col) {
+            Ok(()) => Ok(0),
+            Err(result) => result,
+        };
+        if result.is_ok() {
+            // Move cursor to the beginning of the next line
+            state.file_row += 1;
+            state.file_col = 0;
+        }
+        result
+    }
+}
+
+// Handle Enter key - insert newline and move cursor to next line
+fn process_enter(state: &mut EditorState) -> SysResult {
+    let result = match insert_newline(state, state.file_row, state.file_col) {
+        Ok(()) => Ok(0),
+        Err(result) => result,
+    };
+    if result.is_ok() {
+        state.file_row += 1;
+        state.file_col = 0;
+    }
+    result
+}
+
+// Handle Backspace key - delete character before cursor
+fn process_backspace(state: &mut EditorState) -> SysResult {
+    if state.file_col == 0 && state.file_row == 0 {
+        return Ok(0);
+    }
+
+    let prev_line_length = if state.file_col == 0 && state.file_row > 0 {
+        state.buffer.line_length(state.file_row - 1, state.tab_size)
+    } else {
+        0
+    };
+
+    let result = state.buffer.backspace_at(state.file_row, state.file_col);
+    if let Err(e) = result {
+        state.print_error(if matches!(e, FileBufferError::InvalidOperation) {
+            "Can't delete at this position"
+        } else {
+            "Error deleting character"
+        })?;
+        return Ok(0);
+    }
+
+    // Update cursor position after backspace
+    if state.file_col > 0 {
+        state.file_col -= 1;
+    } else if state.file_row > 0 {
+        state.file_row -= 1;
+        state.file_col = prev_line_length;
+    }
+
+    Ok(0)
+}
+
+// Handle Delete key - delete character at cursor
+fn process_delete(state: &mut EditorState) -> SysResult {
+    let line_count = state.buffer.count_lines();
+    let current_line_len = state.buffer.line_length(state.file_row, state.tab_size);
+
+    if state.file_col < current_line_len {
+        // Delete character at cursor position
+        let result = state.buffer.delete_char(state.file_row, state.file_col);
+        if let Err(e) = result {
+            state.print_error(if matches!(e, FileBufferError::InvalidOperation) {
+                "Can't delete at this position"
+            } else {
+                "Error deleting character"
+            })?;
+        }
+    } else if state.file_row + 1 < line_count {
+        // At end of line - join with next line by deleting the newline
+        if let Some(line_end) = state.buffer.find_line_end(state.file_row) {
+            let result = state.buffer.delete_at_position(line_end);
+            if let Err(e) = result {
+                state.print_error(if matches!(e, FileBufferError::InvalidOperation) {
+                    "Can't join lines"
+                } else {
+                    "Error deleting newline"
+                })?;
+            }
+        }
+    }
+
+    Ok(0)
+}
+
+// Handle character insertion
+fn process_char(state: &mut EditorState, ch: u8) -> SysResult {
+    let result = state.buffer.insert_char(state.file_row, state.file_col, ch);
+    if let Err(e) = result {
+        state.print_error(if matches!(e, FileBufferError::BufferFull) {
+            "Buffer is full"
+        } else {
+            "Failed to insert character"
+        })?;
+        return Ok(0);
+    }
+
+    // Move cursor right after insertion
+    state.file_col += 1;
+    Ok(0)
+}
+
 fn process_cursor_key(key: Key, state: &mut EditorState) -> SysResult {
     if state.search.mode {
         return Ok(0);
     }
 
-    match key {
-        Key::ArrowUp => state.cursor_up(),
-        Key::ArrowDown => state.cursor_down(),
-        Key::ArrowLeft => state.cursor_left(),
-        Key::ArrowRight => state.cursor_right(),
-        Key::Home => state.cursor_home(),
-        Key::End => state.cursor_end(),
-        Key::PageUp => state.page_up(),
-        Key::PageDown => state.page_down(),
-        Key::FirstChar => state.cursor_first_char(),
-        Key::LastChar => state.cursor_last_char(),
-        Key::WordForward => state.cursor_word_forward(),
-        Key::WordBackward => state.cursor_word_backward(),
-        Key::OpenLine => {
-            if state.file_col == 0 {
-                // If at beginning of line, insert a newline above
-                match insert_newline(state, state.file_row, 0) {
-                    Ok(()) => {}
-                    Err(result) => return result,
-                }
-                // Cursor stays at the same position
-            } else {
-                // Otherwise, insert a newline at the current cursor position
-                match insert_newline(state, state.file_row, state.file_col) {
-                    Ok(()) => {}
-                    Err(result) => return result,
-                }
-                // Move cursor to the beginning of the next line
-                state.file_row += 1;
-                state.file_col = 0;
-            }
-        }
-        Key::Enter => {
-            match insert_newline(state, state.file_row, state.file_col) {
-                Ok(()) => {}
-                Err(result) => return result,
-            }
-            state.file_row += 1;
-            state.file_col = 0;
-        }
-        Key::Backspace => {
-            if state.file_col > 0 || state.file_row > 0 {
-                let prev_line_length = if state.file_col == 0 && state.file_row > 0 {
-                    state.buffer.line_length(state.file_row - 1, state.tab_size)
-                } else {
-                    0
-                };
-
-                if let Err(e) = state.buffer.backspace_at(state.file_row, state.file_col) {
-                    state.print_error(match e {
-                        FileBufferError::InvalidOperation => "Can't delete at this position",
-                        _ => "Error deleting character",
-                    })?;
-                    return Ok(0);
-                }
-
-                if state.file_col > 0 {
-                    state.file_col -= 1;
-                } else if state.file_row > 0 {
-                    state.file_row -= 1;
-                    state.file_col = prev_line_length;
-                }
-            }
-        }
-        Key::Delete => {
-            let line_count = state.buffer.count_lines();
-            let current_line_len = state.buffer.line_length(state.file_row, state.tab_size);
-
-            if state.file_col < current_line_len {
-                if let Err(e) = state.buffer.delete_char(state.file_row, state.file_col) {
-                    state.print_error(match e {
-                        FileBufferError::InvalidOperation => "Can't delete at this position",
-                        _ => "Error deleting character",
-                    })?;
-                    return Ok(0);
-                }
-            } else if state.file_row + 1 < line_count {
-                // At end of line - join with next line by deleting the newline
-                if let Some(line_end) = state.buffer.find_line_end(state.file_row) {
-                    if let Err(e) = state.buffer.delete_at_position(line_end) {
-                        state.print_error(match e {
-                            FileBufferError::InvalidOperation => "Can't join lines",
-                            _ => "Error deleting newline",
-                        })?;
-                        return Ok(0);
-                    }
-                    // Cursor stays at same position (now in middle of joined line)
-                }
-            }
-        }
-        Key::Char(ch) => {
-            if let Err(e) = state.buffer.insert_char(state.file_row, state.file_col, ch) {
-                state.print_error(match e {
-                    FileBufferError::BufferFull => "Buffer is full",
-                    _ => "Failed to insert character",
-                })?;
-                return Ok(0);
-            }
-
-            // Move cursor right
-            state.file_col += 1;
-        }
-        _ => return Ok(0),
+    // Process movement keys - these don't modify buffer
+    if process_movement_key(key, state) {
+        state.scroll_to_cursor();
+        return state.draw_screen();
     }
+
+    // Process editing keys that modify buffer
+    let edit_result = match key {
+        Key::OpenLine => process_open_line(state),
+        Key::Enter => process_enter(state),
+        Key::Backspace => process_backspace(state),
+        Key::Delete => process_delete(state),
+        Key::Char(ch) => process_char(state, ch),
+        _ => Ok(0),
+    };
+
+    edit_result?;
 
     state.scroll_to_cursor();
     state.draw_screen()
@@ -320,105 +407,74 @@ fn check_terminal_resize(state: &mut EditorState) -> SysResult {
 // Process key input in search mode
 fn process_search_key(state: &mut EditorState, key: Key) -> SysResult {
     match key {
-        Key::Escape | Key::ExitSearch => {
-            // Cancel search and return to original position
-            state.cancel_search()?;
-        }
-        Key::Enter => {
-            // Accept search and stay at current match position
-            state.accept_search()?;
-        }
-        Key::Backspace => {
-            // Remove last character from search
-            state.remove_search_char()?;
-        }
-        Key::Search => {
-            // Switch to forward search if we're in reverse search,
-            // otherwise find next match
-            if state.search.reverse {
-                state.switch_search_direction()?;
-            }
-            state.find_next_match()?;
-        }
-        Key::ReverseSearch => {
-            // Switch to reverse search if we're in forward search,
-            // otherwise find next match
-            if !state.search.reverse {
-                state.switch_search_direction()?;
-            }
-            state.find_next_match()?;
-        }
-        Key::ToggleCase => {
-            // Toggle case sensitivity
-            state.toggle_search_case_sensitivity()?;
-        }
+        Key::Escape | Key::ExitSearch => state.cancel_search(),
+        Key::Enter => state.accept_search(),
+        Key::Backspace => state.remove_search_char(),
+        Key::Search => handle_search_direction(state, true),
+        Key::ReverseSearch => handle_search_direction(state, false),
+        Key::ToggleCase => state.toggle_search_case_sensitivity(),
         Key::Char(ch) => {
-            // Add character to search query and find matches
             if ch.is_ascii_graphic() || ch == b' ' {
-                state.add_search_char(ch)?;
+                state.add_search_char(ch)
+            } else {
+                Ok(0)
             }
         }
-        _ => {} // Ignore other keys in search mode
+        _ => Ok(0), // Ignore other keys in search mode
     }
+}
 
-    Ok(0)
+// Handle search direction change or find next match
+fn handle_search_direction(state: &mut EditorState, forward: bool) -> SysResult {
+    let should_switch = state.search.reverse == forward;
+    if should_switch {
+        state.switch_search_direction()
+    } else {
+        state.find_next_match()
+    }
+}
+
+// Process command keys that don't affect cursor/buffer
+fn process_command_key(key: Key, state: &mut EditorState, running: &mut bool) -> Option<SysResult> {
+    match key {
+        Key::Quit => {
+            *running = false;
+            Some(Ok(0))
+        }
+        Key::Refresh => {
+            let resize_result = check_terminal_resize(state);
+            if resize_result.is_err() {
+                match clear_screen() {
+                    Ok(_) => Some(state.draw_screen()),
+                    Err(e) => Some(Err(e)),
+                }
+            } else {
+                Some(resize_result)
+            }
+        }
+        Key::OpenFile => {
+            let _ = handle_open_file(state);
+            Some(Ok(0))
+        }
+        Key::SaveFile => Some(handle_save_file(state)),
+        Key::Search => Some(state.start_search(false)),
+        Key::ReverseSearch => Some(state.start_search(true)),
+        Key::Escape | Key::ExitSearch | Key::ToggleCase => Some(Ok(0)),
+        _ => None, // Not a command key
+    }
 }
 
 // Process key input in normal editor mode
 fn process_normal_key(state: &mut EditorState, key: Key, running: &mut bool) -> SysResult {
     state.print_message("")?;
 
-    match key {
-        Key::Quit => *running = false,
-        Key::Refresh => {
-            // Force a terminal resize check (also handles redrawing)
-            check_terminal_resize(state)?;
-            if check_terminal_resize(state).is_err() {
-                clear_screen()?;
-                state.draw_screen()?;
-            }
-        }
-        Key::OpenFile => {
-            let _ = handle_open_file(state);
-        }
-        Key::SaveFile => {
-            handle_save_file(state)?;
-        }
-        Key::Search => {
-            // Enter forward search mode
-            state.start_search(false)?;
-        }
-        Key::ReverseSearch => {
-            // Enter reverse search mode
-            state.start_search(true)?;
-        }
-        Key::ArrowUp
-        | Key::ArrowDown
-        | Key::ArrowLeft
-        | Key::ArrowRight
-        | Key::Home
-        | Key::End
-        | Key::PageUp
-        | Key::PageDown
-        | Key::FirstChar
-        | Key::LastChar
-        | Key::WordForward
-        | Key::WordBackward
-        | Key::Enter
-        | Key::Backspace
-        | Key::Delete
-        | Key::OpenLine => {
-            process_cursor_key(key, state)?;
-        }
-        Key::Char(_) | Key::Combination(_) => {
-            process_cursor_key(key, state)?;
-        }
-        Key::Escape | Key::ExitSearch | Key::ToggleCase => {
-            // We'll ignore these keys in normal mode
-        }
+    // First try processing it as a command key
+    if let Some(result) = process_command_key(key, state, running) {
+        return result;
     }
 
-    Ok(0)
+    // Otherwise process as cursor/editing key
+    process_cursor_key(key, state)
 }
 
 fn get_cmdline_filename() -> Result<[u8; MAX_PATH], EditorError> {
@@ -463,10 +519,24 @@ fn get_cmdline_filename() -> Result<[u8; MAX_PATH], EditorError> {
     Ok(filename)
 }
 
-pub fn run_editor() -> Result<(), EditorError> {
-    enter_alternate_screen()?;
-    clear_screen()?;
+// Create an empty buffer with the specified capacity
+fn create_empty_buffer(capacity: usize) -> Result<FileBuffer, EditorError> {
+    let prot = PROT_READ | PROT_WRITE;
+    let flags = MAP_PRIVATE | MAP_ANONYMOUS;
+    let Ok(new_buffer) = mmap(0, capacity, prot, flags, usize::MAX, 0) else {
+        return Err(EditorError::MMapFile);
+    };
 
+    Ok(FileBuffer {
+        content: new_buffer as *mut u8,
+        size: 0,
+        capacity,
+        modified: true,
+    })
+}
+
+// Set up the editor state and buffer
+fn setup_editor_state() -> Result<(EditorState, bool), EditorError> {
     let mut winsize = Winsize::new();
     get_winsize(STDOUT, &mut winsize)?;
 
@@ -477,63 +547,75 @@ pub fn run_editor() -> Result<(), EditorError> {
     let is_empty_filename = filename.iter().all(|&b| b == 0);
 
     state.buffer = if is_empty_filename {
-        // Create an empty buffer
-        let new_capacity = 4096;
-        let prot = PROT_READ | PROT_WRITE;
-        let flags = MAP_PRIVATE | MAP_ANONYMOUS;
-        let Ok(new_buffer) = mmap(0, new_capacity, prot, flags, usize::MAX, 0) else {
-            exit_alternate_screen()?;
-            state.print_error("Error: Failed to create empty buffer")?;
-            return Err(EditorError::MMapFile);
-        };
-
-        FileBuffer {
-            content: new_buffer as *mut u8,
-            size: 0,
-            capacity: new_capacity,
-            modified: true,
-        }
+        create_empty_buffer(4096)?
     } else {
-        // Open existing file
-        match open_file(&filename) {
-            Ok(buffer) => buffer,
-            Err(e) => {
-                exit_alternate_screen()?;
-                state.print_error("Error: Failed to open file")?;
-                return Err(e);
+        open_file(&filename)?
+    };
+
+    Ok((state, is_empty_filename))
+}
+
+// Main editor loop
+fn editor_loop(mut state: EditorState) -> Result<(), EditorError> {
+    let mut running = true;
+
+    while running {
+        if let Some(key) = read_key() {
+            // Handle keys based on mode
+            let result = if state.search.mode && key == Key::ToggleCase {
+                state.toggle_search_case_sensitivity()
+            } else if state.search.mode {
+                process_search_key(&mut state, key)
+            } else {
+                process_normal_key(&mut state, key, &mut running)
+            };
+
+            if let Err(e) = result {
+                return Err(e.into());
             }
+        }
+
+        if let Err(e) = state.draw_status_bar() {
+            return Err(e.into());
+        }
+
+        if let Err(e) = move_cursor(state.cursor_row, state.cursor_col) {
+            return Err(e.into());
+        }
+    }
+
+    Ok(())
+}
+
+pub fn run_editor() -> Result<(), EditorError> {
+    enter_alternate_screen()?;
+    clear_screen()?;
+
+    let setup_result = setup_editor_state();
+
+    let (mut state, is_empty_filename) = match setup_result {
+        Ok(result) => result,
+        Err(e) => {
+            exit_alternate_screen()?;
+            return Err(e);
         }
     };
 
     // Initial screen render
     state.draw_screen()?;
     state.draw_status_bar()?;
-    if is_empty_filename {
-        state.print_message("Empty buffer created")?;
+
+    // Show appropriate message
+    let message = if is_empty_filename {
+        "Empty buffer created"
     } else {
-        state.print_message("File opened successfully")?;
-    }
+        "File opened successfully"
+    };
+    state.print_message(message)?;
 
-    // Main editor loop
-    let mut running = true;
+    // Run the main editor loop
+    let result = editor_loop(state);
 
-    let result = (|| {
-        while running {
-            if let Some(key) = read_key() {
-                // First check specifically for Alt+c in search mode to toggle case sensitivity
-                if state.search.mode && key == Key::ToggleCase {
-                    state.toggle_search_case_sensitivity()?;
-                } else if state.search.mode {
-                    process_search_key(&mut state, key)?;
-                } else {
-                    process_normal_key(&mut state, key, &mut running)?;
-                }
-            }
-            state.draw_status_bar()?;
-            move_cursor(state.cursor_row, state.cursor_col)?;
-        }
-        Ok(())
-    })();
     exit_alternate_screen()?;
     result
 }
