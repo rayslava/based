@@ -224,7 +224,7 @@ impl EditorState {
                 }
                 None => {
                     // No match found
-                    self.print_error("No match found")
+                    self.print_warning("No match found")
                 }
             }
         }
@@ -399,7 +399,7 @@ impl EditorState {
                     Ok(0)
                 } else {
                     // No match found with new case sensitivity setting
-                    self.print_error("No match found")?;
+                    self.print_warning("No match found")?;
                     Ok(0)
                 }
             }
@@ -543,7 +543,7 @@ impl EditorState {
                 }
                 None => {
                     // No more matches found
-                    self.print_error("No more matches")
+                    self.print_warning("No more matches")
                 }
             }
         }
@@ -1146,7 +1146,6 @@ impl EditorState {
         self.print_status(|| puts(msg))
     }
 
-    #[allow(dead_code)]
     // Print a warning message (yellow) to the status line
     pub(in crate::editor) fn print_warning(&self, msg: &str) -> SysResult {
         self.print_status(|| {
