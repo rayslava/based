@@ -26,7 +26,6 @@ use crate::{
 };
 
 pub enum EditorError {
-    OpenFile,
     LoadFile,
     MMapFile,
     FileBuffer,
@@ -46,50 +45,65 @@ impl From<FileBufferError> for EditorError {
 }
 
 fn open_file(file_path: &[u8]) -> Result<FileBuffer, EditorError> {
-    let Ok(fd) = open(file_path, O_RDONLY) else {
-        return Err(EditorError::OpenFile);
-    };
-
-    if fd == 0 {
-        return Err(EditorError::LoadFile);
-    }
-    let file_size = lseek(fd, 0, SEEK_END)?;
-    lseek(fd, 0, SEEK_SET)?;
-
-    let buffer = {
-        if file_size == 0 {
-            close(fd)?;
-            let new_capacity = 4096; // Start with one page
-            let prot = PROT_READ | PROT_WRITE;
-            let flags = MAP_PRIVATE | MAP_ANONYMOUS;
-            let Ok(new_buffer) = mmap(0, new_capacity, prot, flags, usize::MAX, 0) else {
-                return Err(FileBufferError::WrongSize.into());
-            };
-
-            FileBuffer {
-                content: new_buffer as *mut u8,
-                size: 0,
-                capacity: new_capacity,
-                modified: true,
-            }
-        } else {
-            let new_capacity = file_size;
-            // Round up to the next page
-            let prot = PROT_READ | PROT_WRITE;
-            let flags = MAP_PRIVATE;
-            let Ok(new_buffer) = mmap(0, new_capacity, prot, flags, fd, 0) else {
-                return Err(EditorError::MMapFile);
-            };
-
-            FileBuffer {
-                content: new_buffer as *mut u8,
-                size: file_size,
-                capacity: new_capacity,
-                modified: false,
-            }
+    // Try opening the file
+    if let Ok(fd) = open(file_path, O_RDONLY) {
+        // File exists
+        if fd == 0 {
+            return Err(EditorError::LoadFile);
         }
-    };
-    Ok(buffer)
+        let file_size = lseek(fd, 0, SEEK_END)?;
+        lseek(fd, 0, SEEK_SET)?;
+
+        let buffer = {
+            if file_size == 0 {
+                close(fd)?;
+                let new_capacity = 4096; // Start with one page
+                let prot = PROT_READ | PROT_WRITE;
+                let flags = MAP_PRIVATE | MAP_ANONYMOUS;
+                let Ok(new_buffer) = mmap(0, new_capacity, prot, flags, usize::MAX, 0) else {
+                    return Err(FileBufferError::WrongSize.into());
+                };
+
+                FileBuffer {
+                    content: new_buffer as *mut u8,
+                    size: 0,
+                    capacity: new_capacity,
+                    modified: true,
+                }
+            } else {
+                let new_capacity = file_size;
+                // Round up to the next page
+                let prot = PROT_READ | PROT_WRITE;
+                let flags = MAP_PRIVATE;
+                let Ok(new_buffer) = mmap(0, new_capacity, prot, flags, fd, 0) else {
+                    return Err(EditorError::MMapFile);
+                };
+
+                FileBuffer {
+                    content: new_buffer as *mut u8,
+                    size: file_size,
+                    capacity: new_capacity,
+                    modified: false,
+                }
+            }
+        };
+        Ok(buffer)
+    } else {
+        // File doesn't exist, create a new empty buffer
+        let new_capacity = 4096; // Start with one page
+        let prot = PROT_READ | PROT_WRITE;
+        let flags = MAP_PRIVATE | MAP_ANONYMOUS;
+        let Ok(new_buffer) = mmap(0, new_capacity, prot, flags, usize::MAX, 0) else {
+            return Err(FileBufferError::WrongSize.into());
+        };
+
+        Ok(FileBuffer {
+            content: new_buffer as *mut u8,
+            size: 0,
+            capacity: new_capacity,
+            modified: true,
+        })
+    }
 }
 
 fn insert_newline(state: &mut EditorState, row: usize, col: usize) -> Result<(), SysResult> {
@@ -352,16 +366,20 @@ fn handle_open_file(state: &mut EditorState) -> Result<(), EditorError> {
             state.scroll_row = 0;
             state.scroll_col = 0;
             state.buffer = new_buffer;
-
             clear_screen()?;
             state.draw_screen()?;
-            state.print_message("File opened successfully")?;
-            move_cursor(0, 0)?;
             state.filename[..filename.len()].copy_from_slice(&filename);
+            if state.buffer.is_modified() {
+                state.print_message("New file created")?;
+            } else {
+                state.print_message("File opened successfully")?;
+            }
+
+            move_cursor(0, 0)?;
             Ok(())
         }
         Err(e) => {
-            state.print_error("Error: Failed to open file")?;
+            state.print_error("Error: Failed to create buffer")?;
             Err(e)
         }
     }
@@ -608,6 +626,8 @@ pub fn run_editor() -> Result<(), EditorError> {
     // Show appropriate message
     let message = if is_empty_filename {
         "Empty buffer created"
+    } else if state.buffer.is_modified() {
+        "New file created"
     } else {
         "File opened successfully"
     };
@@ -708,14 +728,39 @@ pub mod tests {
             let line_length = buffer.line_length(0, 4); // tab_size=4
             assert_eq!(line_length, 17, "First line length should be 17");
         }
+    }
 
-        // Test with a nonexistent file path
-        let invalid_path = b"nonexistent_file.txt\0";
-        let result = open_file(invalid_path);
-        assert!(result.is_err(), "Should return error for nonexistent file");
-        match result {
-            Err(EditorError::OpenFile) => (), // Expected error
-            _ => panic!("Expected OpenFile error for nonexistent file"),
+    #[test]
+    fn test_open_nonexistent_file() {
+        use std::path::Path;
+
+        // Test with a nonexistent file path - now should create an empty buffer
+        // Use a unique filename to avoid conflicts
+        let nonexistent_path = b"test_nonexistent_123456.txt\0";
+
+        // Make sure the file doesn't exist
+        let path_str = "test_nonexistent_123456.txt";
+        if Path::new(path_str).exists() {
+            std::fs::remove_file(path_str).unwrap();
+        }
+
+        // Attempt to open the nonexistent file
+        let result = open_file(nonexistent_path);
+        assert!(
+            result.is_ok(),
+            "Should create empty buffer for nonexistent file"
+        );
+
+        // Clean up any created buffer to avoid memory leaks in tests
+        if let Ok(buffer) = result {
+            buffer.cleanup();
+
+            // Basic sanity checks only
+            assert_eq!(
+                buffer.size, 0,
+                "Buffer for nonexistent file should be empty"
+            );
+            assert!(buffer.modified, "Buffer should be marked as modified");
         }
     }
 

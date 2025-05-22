@@ -1380,6 +1380,71 @@ pub mod tests {
     }
 
     #[test]
+    fn test_save_new_file() {
+        use std::io::Read;
+        use std::path::Path;
+
+        // Use a unique filename to avoid conflicts with other tests
+        let test_file_path = "test_new_file_123456.txt";
+        let test_file = format!("{test_file_path}\0").into_bytes();
+
+        // Make sure the test file doesn't exist
+        if Path::new(test_file_path).exists() {
+            std::fs::remove_file(test_file_path).expect("Failed to remove existing test file");
+        }
+
+        // Create an empty buffer to simulate a new file
+        let mut buffer = FileBuffer {
+            content: std::ptr::null_mut(),
+            size: 0,
+            capacity: 100,
+            modified: true, // Marked as modified since it's a new buffer
+        };
+
+        // Allocate memory for the buffer
+        let prot = crate::syscall::PROT_READ | crate::syscall::PROT_WRITE;
+        let flags = crate::syscall::MAP_PRIVATE | crate::syscall::MAP_ANONYMOUS;
+        let Ok(addr) = crate::syscall::mmap(0, buffer.capacity, prot, flags, usize::MAX, 0) else {
+            panic!("Failed to allocate test buffer: mmap error");
+        };
+        buffer.content = addr as *mut u8;
+
+        // Add some content to represent user edits - keep it short and simple
+        let content = b"Test";
+        unsafe {
+            for (i, &byte) in content.iter().enumerate() {
+                *(buffer.content.add(i)) = byte;
+            }
+            buffer.size = content.len();
+        }
+
+        // Attempt to save the buffer
+        let result = buffer.save_to_file(&test_file);
+        // Clean up buffer immediately to avoid memory issues
+        let _ = crate::syscall::munmap(buffer.content as usize, buffer.capacity);
+
+        // Verify results
+        assert!(
+            result.is_ok(),
+            "New file should be created and saved successfully"
+        );
+
+        // Verify the file was created with the correct content
+        if Path::new(test_file_path).exists() {
+            let mut file = std::fs::File::open(test_file_path).expect("Failed to open new file");
+            let mut contents = String::new();
+            file.read_to_string(&mut contents)
+                .expect("Failed to read new file");
+            assert_eq!(contents, "Test", "File content should match the buffer");
+
+            // Clean up
+            std::fs::remove_file(test_file_path).expect("Failed to clean up test file");
+        } else {
+            panic!("File was not created");
+        }
+    }
+
+    #[test]
     fn test_file_buffer_insert_and_save() {
         use std::io::Read;
 
