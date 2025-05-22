@@ -38,6 +38,11 @@ pub(in crate::editor) enum Key {
     WordForward,
     WordBackward,
     ToggleCase,
+    SetMark,  // For selecting text with Ctrl+Space
+    Cut,      // Cut selected text with Ctrl+w
+    Copy,     // Copy selected text with Alt+w
+    Paste,    // Paste text with Ctrl+y
+    KillLine, // Kill to end of line with Ctrl+k
     Combination([u8; 2]),
 }
 
@@ -61,6 +66,8 @@ fn process_escape_sequence() -> Key {
         b'b' => Key::WordBackward,
         // Alt+c for toggling case sensitivity in search
         b'c' => Key::ToggleCase,
+        // Alt+w for copying the selection
+        b'w' => Key::Copy,
 
         // Standard escape sequences starting with ESC [
         b'[' => {
@@ -199,6 +206,7 @@ pub(in crate::editor) fn read_key() -> Option<Key> {
         5 => Some(Key::End),            // C-e (end-of-line)
         6 => Some(Key::ArrowRight),     // C-f (forward-char)
         7 => Some(Key::ExitSearch),     // C-g (exit-search-mode)
+        11 => Some(Key::KillLine),      // C-k (kill-line)
         12 => Some(Key::Refresh),       // C-l (refresh screen)
         14 => Some(Key::ArrowDown),     // C-n (next-line)
         15 => Some(Key::OpenLine),      // C-o (open-line)
@@ -206,6 +214,9 @@ pub(in crate::editor) fn read_key() -> Option<Key> {
         18 => Some(Key::ReverseSearch), // C-r (reverse-search)
         19 => Some(Key::Search),        // C-s (search)
         22 => Some(Key::PageDown),      // C-v (page-down)
+        23 => Some(Key::Cut),           // C-w (kill-region/cut)
+        25 => Some(Key::Paste),         // C-y (yank/paste)
+        0 => Some(Key::SetMark),        // C-space (set-mark, ASCII 0 = NUL)
 
         // Ctrl+X prefix for key combinations
         24 => {

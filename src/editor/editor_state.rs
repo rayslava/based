@@ -7,7 +7,10 @@ use crate::{
     termios::Winsize,
 };
 
-use super::{FileBuffer, SearchState, SyntaxHighlighter, syntax_highlight::HighlightColor};
+use super::{
+    FileBuffer, KillRing, KillRingError, SearchState, SyntaxHighlighter,
+    syntax_highlight::HighlightColor,
+};
 
 pub(in crate::editor) struct EditorState {
     pub(in crate::editor) winsize: Winsize, // Terminal window size
@@ -23,6 +26,10 @@ pub(in crate::editor) struct EditorState {
     pub(in crate::editor) buffer: FileBuffer,
     pub(in crate::editor) search: SearchState, // Search state
     pub(in crate::editor) highlighter: SyntaxHighlighter, // Syntax highlighter
+    pub(in crate::editor) mark_active: bool,   // Whether mark is active for selection
+    pub(in crate::editor) mark_row: usize,     // Mark row position for selection
+    pub(in crate::editor) mark_col: usize,     // Mark column position for selection
+    pub(in crate::editor) kill_ring: KillRing, // Kill-ring for cut/copy/paste operations
 }
 
 impl EditorState {
@@ -34,6 +41,13 @@ impl EditorState {
         // Create and initialize the syntax highlighter
         let mut highlighter = SyntaxHighlighter::new();
         highlighter.detect_file_type(filename);
+
+        // Create kill-ring
+        // We need to explicitly create a KillRing since we can't access private fields
+        let kill_ring = KillRing::new().unwrap_or_else(|_| {
+            // Try again in case it was a temporary issue
+            KillRing::new().expect("Failed to create KillRing twice")
+        });
 
         Self {
             winsize,
@@ -54,6 +68,10 @@ impl EditorState {
             },
             search: SearchState::new(),
             highlighter,
+            mark_active: false,
+            mark_row: 0,
+            mark_col: 0,
+            kill_ring,
         }
     }
 
@@ -1065,8 +1083,15 @@ impl EditorState {
 
                 // Apply highlighting if visible
                 if chars_to_skip == 0 && screen_col < self.winsize.cols as usize {
-                    if is_highlight {
-                        // Search match highlighting takes precedence (reverse video)
+                    // Check if the character is part of a selection
+                    let is_selected = self.is_position_selected(file_line_idx, idx);
+
+                    if is_selected {
+                        // Selection highlighting takes precedence over everything
+                        set_bg_color(4)?; // Blue background
+                        set_fg_color(7)?; // White text
+                    } else if is_highlight {
+                        // Search match highlighting takes precedence after selection
                         set_bg_color(7)?;
                         set_fg_color(0)?;
                     } else if let HighlightColor::Delimiter = syntax_highlight {
@@ -1111,7 +1136,8 @@ impl EditorState {
                 }
 
                 // Reset colors after printing if needed
-                if (is_highlight || syntax_highlight != HighlightColor::Default)
+                let is_selected = self.is_position_selected(file_line_idx, idx);
+                if (is_selected || is_highlight || syntax_highlight != HighlightColor::Default)
                     && chars_to_skip == 0
                     && screen_col <= self.winsize.cols as usize
                 {
@@ -1163,6 +1189,366 @@ impl EditorState {
             puts(msg)?;
             reset_colors()
         })
+    }
+
+    // Set mark at current cursor position
+    pub(in crate::editor) fn set_mark(&mut self) -> SysResult {
+        self.mark_active = true;
+        self.mark_row = self.file_row;
+        self.mark_col = self.file_col;
+        self.print_message("Mark set")
+    }
+
+    // Clear mark (deactivate selection)
+    pub(in crate::editor) fn clear_mark(&mut self) -> SysResult {
+        self.mark_active = false;
+        self.draw_screen()?;
+        self.print_message("Mark cleared")
+    }
+
+    // Get selected text range (ordered by position)
+    fn get_selection_range(&self) -> ((usize, usize), (usize, usize)) {
+        let (start_row, start_col, end_row, end_col) = if self.file_row < self.mark_row
+            || (self.file_row == self.mark_row && self.file_col < self.mark_col)
+        {
+            (self.file_row, self.file_col, self.mark_row, self.mark_col)
+        } else {
+            (self.mark_row, self.mark_col, self.file_row, self.file_col)
+        };
+
+        ((start_row, start_col), (end_row, end_col))
+    }
+
+    // Calculate total selection size in bytes
+    fn selection_size(&self) -> usize {
+        if !self.mark_active {
+            return 0;
+        }
+
+        let ((start_row, start_col), (end_row, end_col)) = self.get_selection_range();
+
+        // If selection is within the same line
+        if start_row == end_row {
+            return end_col - start_col;
+        }
+
+        // For multiline selections, we need to count each line's contribution
+        let mut size = 0;
+
+        // First line: from start to end of line
+        if let Some(line) = self.buffer.get_line(start_row) {
+            size += line.len().saturating_sub(start_col);
+            size += 1; // Include newline
+        }
+
+        // Middle lines (including whole line and newline)
+        for row in (start_row + 1)..end_row {
+            if let Some(line) = self.buffer.get_line(row) {
+                size += line.len() + 1; // Include newline
+            }
+        }
+
+        // Last line: from beginning to cursor
+        if let Some(line) = self.buffer.get_line(end_row) {
+            if end_col <= line.len() {
+                size += end_col;
+            } else {
+                size += line.len();
+            }
+        }
+
+        size
+    }
+
+    // Copy selected text to the kill-ring
+    pub(in crate::editor) fn copy_selection(&mut self) -> SysResult {
+        if !self.mark_active {
+            return self.print_message("No selection (mark not active)");
+        }
+
+        let selection_size = self.selection_size();
+        if selection_size == 0 {
+            return self.print_message("Empty selection");
+        } else if selection_size > self.kill_ring.capacity() {
+            return self.print_error("Selection too large for kill-ring");
+        }
+
+        let ((start_row, start_col), (end_row, end_col)) = self.get_selection_range();
+
+        // Create a fixed-size buffer for the selected text
+        let mut selected_text = [0u8; 4096]; // Maximum size (one page)
+        let mut text_len = 0;
+
+        // Copy text from buffer to the selected_text array
+        if start_row == end_row {
+            // Single line selection
+            if let Some(line) = self.buffer.get_line(start_row) {
+                let end_idx = end_col.min(line.len());
+                // Use indices as we need to control text_len
+                let end = end_idx.min(line.len());
+                let mut idx = start_col;
+                while idx < end && text_len < selected_text.len() {
+                    selected_text[text_len] = line[idx];
+                    text_len += 1;
+                    idx += 1;
+                }
+            }
+        } else {
+            // Multiline selection
+
+            // First line - from start_col to end of line
+            if let Some(line) = self.buffer.get_line(start_row) {
+                // Use indices as we need to control text_len
+                let mut idx = start_col;
+                while idx < line.len() && text_len < selected_text.len() {
+                    selected_text[text_len] = line[idx];
+                    text_len += 1;
+                    idx += 1;
+                }
+                if text_len < selected_text.len() {
+                    selected_text[text_len] = b'\n';
+                    text_len += 1;
+                }
+            }
+
+            // Middle lines (complete lines)
+            for row in (start_row + 1)..end_row {
+                if let Some(line) = self.buffer.get_line(row) {
+                    for &ch in line {
+                        if text_len < selected_text.len() {
+                            selected_text[text_len] = ch;
+                            text_len += 1;
+                        }
+                    }
+                    if text_len < selected_text.len() {
+                        selected_text[text_len] = b'\n';
+                        text_len += 1;
+                    }
+                }
+            }
+
+            // Last line - from beginning to end_col
+            if let Some(line) = self.buffer.get_line(end_row) {
+                let end_idx = end_col.min(line.len());
+                // Use indices as we need to control text_len
+                let end = end_idx.min(line.len());
+                let mut idx = 0;
+                while idx < end && text_len < selected_text.len() {
+                    selected_text[text_len] = line[idx];
+                    text_len += 1;
+                    idx += 1;
+                }
+            }
+        }
+
+        // Copy to kill-ring
+        match self.kill_ring.copy(&selected_text[..text_len]) {
+            Ok(()) => {
+                // Deactivate the mark after copying
+                self.mark_active = false;
+                self.draw_screen()?;
+                self.print_message("Copied selection to kill-ring")
+            }
+            Err(KillRingError::BufferTooLarge) => {
+                self.print_error("Selection too large for kill-ring")
+            }
+            Err(_) => self.print_error("Failed to copy selection"),
+        }
+    }
+
+    // Delete selected text and copy to kill-ring
+    pub(in crate::editor) fn cut_selection(&mut self) -> SysResult {
+        if !self.mark_active {
+            return self.print_message("No selection (mark not active)");
+        }
+
+        // First copy the selection to kill-ring
+        let copy_result = self.copy_selection();
+        copy_result?;
+
+        // Now delete the selection
+        let ((start_row, start_col), (end_row, end_col)) = self.get_selection_range();
+
+        // Delete selection from buffer
+        if start_row == end_row {
+            // Single line selection - delete characters from start_col to end_col
+            for _ in start_col..end_col {
+                let result = self.buffer.delete_char(start_row, start_col);
+                if result.is_err() {
+                    return self.print_error("Failed to delete selection");
+                }
+            }
+        } else {
+            // Multiline selection
+
+            // Delete all full lines between start and end
+            for _ in (start_row + 1)..end_row {
+                // Delete line start_row+1 (which becomes the next line after start_row repeatedly)
+                // Each time we delete a line, the later lines shift up
+                let Some(line_end) = self.buffer.find_line_end(start_row) else {
+                    return self.print_error("Failed to find line end");
+                };
+
+                let result = self.buffer.delete_at_position(line_end);
+                if result.is_err() {
+                    return self.print_error("Failed to delete line in selection");
+                }
+            }
+
+            // Delete partial last line (from beginning to end_col)
+            for _ in 0..end_col {
+                let result = self.buffer.delete_char(start_row + 1, 0);
+                if result.is_err() {
+                    return self.print_error("Failed to delete end of selection");
+                }
+            }
+
+            // Delete partial first line (from start_col to end)
+            let first_line_len = match self.buffer.get_line(start_row) {
+                Some(line) => line.len(),
+                None => return self.print_error("Failed to get line length"),
+            };
+
+            // Calculate how many characters to delete
+            let chars_to_delete = first_line_len - start_col;
+            // Delete multiple characters at the same position
+            for _ in 0..chars_to_delete {
+                let result = self.buffer.delete_char(start_row, start_col);
+                if result.is_err() {
+                    return self.print_error("Failed to delete start of selection");
+                }
+            }
+
+            // Join the remaining parts of the first and last lines
+            let Some(pos) = self.buffer.find_line_end(start_row) else {
+                return self.print_error("Failed to find line end");
+            };
+            let result = self.buffer.delete_at_position(pos);
+
+            if result.is_err() {
+                return self.print_error("Failed to join lines after deleting selection");
+            }
+        }
+
+        // Move cursor to start of selection and deactivate mark
+        self.file_row = start_row;
+        self.file_col = start_col;
+        self.mark_active = false;
+
+        // Update screen
+        self.buffer.modified = true;
+        self.scroll_to_cursor();
+        self.draw_screen()?;
+
+        self.print_message("Cut selection to kill-ring")
+    }
+
+    // Paste text from kill-ring at current position
+    pub(in crate::editor) fn paste_from_kill_ring(&mut self) -> SysResult {
+        let kill_ring_content = self.kill_ring.content();
+        if kill_ring_content.is_empty() {
+            return self.print_message("Kill-ring is empty");
+        }
+
+        // Insert text from kill-ring
+        for &byte in kill_ring_content {
+            if byte == b'\n' {
+                // Insert a newline
+                match self.buffer.insert_newline(self.file_row, self.file_col) {
+                    Ok(()) => {
+                        self.file_row += 1;
+                        self.file_col = 0;
+                    }
+                    Err(_) => {
+                        return self.print_error("Failed to insert newline during paste");
+                    }
+                }
+            } else {
+                // Insert a regular character
+                match self.buffer.insert_char(self.file_row, self.file_col, byte) {
+                    Ok(()) => {
+                        self.file_col += 1;
+                    }
+                    Err(_) => {
+                        return self.print_error("Failed to insert character during paste");
+                    }
+                }
+            }
+        }
+
+        // Update buffer and screen
+        self.buffer.modified = true;
+        self.scroll_to_cursor();
+        self.draw_screen()?;
+
+        self.print_message("Pasted from kill-ring")
+    }
+
+    // Kill (cut) from cursor to end of line
+    pub(in crate::editor) fn kill_line(&mut self) -> SysResult {
+        let line_opt = self.buffer.get_line(self.file_row);
+
+        // If no line or at empty line, just add a newline and return
+        if line_opt.is_none() || line_opt.unwrap().is_empty() {
+            return self.print_message("Line is empty");
+        }
+
+        let line = line_opt.unwrap();
+
+        // If already at end of line, delete the newline
+        if self.file_col >= line.len() {
+            if let Some(end_pos) = self.buffer.find_line_end(self.file_row) {
+                let result = self.buffer.delete_at_position(end_pos);
+                if result.is_err() {
+                    return self.print_error("Failed to delete newline");
+                }
+                return self.print_message("Killed newline");
+            }
+            return self.print_message("Already at end of buffer");
+        }
+
+        // Otherwise, copy text from cursor to end of line into kill-ring
+        let text_to_kill = &line[self.file_col..];
+        match self.kill_ring.copy(text_to_kill) {
+            Ok(()) => {
+                // Successfully copied to kill-ring, now delete from buffer
+                let chars_to_delete = line.len() - self.file_col;
+                for _ in 0..chars_to_delete {
+                    let result = self.buffer.delete_char(self.file_row, self.file_col);
+                    if result.is_err() {
+                        return self.print_error("Failed to delete character");
+                    }
+                }
+
+                // Update buffer and screen
+                self.buffer.modified = true;
+                self.draw_screen()?;
+
+                self.print_message("Killed to end of line")
+            }
+            Err(KillRingError::BufferTooLarge) => self.print_error("Text too large for kill-ring"),
+            Err(_) => self.print_error("Failed to copy to kill-ring"),
+        }
+    }
+
+    // Highlight selection during drawing if mark is active
+    fn is_position_selected(&self, row: usize, col: usize) -> bool {
+        if !self.mark_active {
+            return false;
+        }
+
+        let ((start_row, start_col), (end_row, end_col)) = self.get_selection_range();
+
+        match row.cmp(&start_row) {
+            // Before start row - not selected
+            core::cmp::Ordering::Less => false,
+
+            // On start row - check if after start column
+            core::cmp::Ordering::Equal => col >= start_col && (row != end_row || col <= end_col),
+
+            // After start row - check if before end row or on end row before or at end column
+            core::cmp::Ordering::Greater => row < end_row || (row == end_row && col <= end_col),
+        }
     }
 }
 

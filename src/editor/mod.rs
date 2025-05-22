@@ -1,12 +1,14 @@
 mod editor_state;
 mod file_buffer;
 mod key_handlers;
+mod kill_ring;
 mod search_state;
 mod syntax_highlight;
 
 pub(in crate::editor) use editor_state::EditorState;
 pub(in crate::editor) use file_buffer::{FileBuffer, FileBufferError};
 pub(in crate::editor) use key_handlers::{Key, read_key};
+pub(in crate::editor) use kill_ring::{KillRing, KillRingError};
 pub(in crate::editor) use search_state::SearchState;
 pub(in crate::editor) use syntax_highlight::SyntaxHighlighter;
 
@@ -303,6 +305,7 @@ fn process_cursor_key(key: Key, state: &mut EditorState) -> SysResult {
     // Process movement keys - these don't modify buffer
     if process_movement_key(key, state) {
         state.scroll_to_cursor();
+        // Always redraw when mark is active to update selection highlight
         return state.draw_screen();
     }
 
@@ -425,6 +428,7 @@ fn check_terminal_resize(state: &mut EditorState) -> SysResult {
 // Process key input in search mode
 fn process_search_key(state: &mut EditorState, key: Key) -> SysResult {
     match key {
+        // Both Escape and Ctrl+G (ExitSearch) cancel search
         Key::Escape | Key::ExitSearch => state.cancel_search(),
         Key::Enter => state.accept_search(),
         Key::Backspace => state.remove_search_char(),
@@ -477,7 +481,20 @@ fn process_command_key(key: Key, state: &mut EditorState, running: &mut bool) ->
         Key::SaveFile => Some(handle_save_file(state)),
         Key::Search => Some(state.start_search(false)),
         Key::ReverseSearch => Some(state.start_search(true)),
-        Key::Escape | Key::ExitSearch | Key::ToggleCase => Some(Ok(0)),
+        Key::SetMark => Some(state.set_mark()),
+        Key::Cut => Some(state.cut_selection()),
+        Key::Copy => Some(state.copy_selection()),
+        Key::Paste => Some(state.paste_from_kill_ring()),
+        Key::KillLine => Some(state.kill_line()),
+        Key::Escape => {
+            if state.mark_active {
+                Some(state.clear_mark())
+            } else {
+                Some(Ok(0))
+            }
+        }
+        // ExitSearch is handled at a higher level, so no need to handle it here
+        Key::ToggleCase => Some(Ok(0)),
         _ => None, // Not a command key
     }
 }
@@ -580,7 +597,10 @@ fn editor_loop(mut state: EditorState) -> Result<(), EditorError> {
     while running {
         if let Some(key) = read_key() {
             // Handle keys based on mode
-            let result = if state.search.mode && key == Key::ToggleCase {
+            let result = if key == Key::ExitSearch && state.mark_active {
+                // Special handling for Ctrl+G to cancel selection when mark is active
+                state.clear_mark()
+            } else if state.search.mode && key == Key::ToggleCase {
                 state.toggle_search_case_sensitivity()
             } else if state.search.mode {
                 process_search_key(&mut state, key)

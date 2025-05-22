@@ -46,6 +46,10 @@ and no libc is used either. Only Linux syscalls.
 - Always write the most idiomatic and short Rust code, use pattern matching,
   write the statement-based code. Split the code into small and easy-readble
   functions.
+- Never add test-related code in the middle of functions. Never ever change the
+  functions to make them comply the tests. Only change the tests in that case.
+- Validate every change with `make size` to ensure that the build is still
+  successful and it's possible to proceed.
 
 # Build process
 
