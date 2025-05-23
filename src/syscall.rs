@@ -2,7 +2,6 @@
 
 pub const MAX_PATH: usize = 256;
 
-// Constants for system calls
 pub const READ: usize = 0;
 pub const WRITE: usize = 1;
 pub const OPEN: usize = 2;
@@ -13,38 +12,39 @@ pub const MMAP: usize = 9;
 pub const MUNMAP: usize = 11;
 pub const LSEEK: usize = 8;
 
-// Constants for seek
 pub const SEEK_SET: usize = 0;
 pub const SEEK_CUR: usize = 1;
 pub const SEEK_END: usize = 2;
 
-// File descriptors
 pub const STDIN: usize = 0;
 pub const STDOUT: usize = 1;
 
-// Flag constants for open
 pub const O_RDONLY: usize = 0;
 pub const O_WRONLY: usize = 1;
 pub const O_CREAT: usize = 64;
 pub const O_TRUNC: usize = 512;
 
-// Flag constants for mmap
 pub const PROT_READ: usize = 1;
 pub const PROT_WRITE: usize = 2;
 pub const MAP_PRIVATE: usize = 2;
 pub const MAP_ANONYMOUS: usize = 0x20;
 
-// Max error value for syscalls (typically -4095 to -1 in Linux)
-// So the "wrapped" values would be from MAX-4095 to MAX
 const MAX_ERRNO: usize = 4095;
 
-// Result type for syscalls
 pub type SysResult = Result<usize, usize>;
 
-// Check if a syscall result is an error
 #[inline]
 fn is_error(result: usize) -> bool {
     result > usize::MAX - MAX_ERRNO
+}
+
+#[inline]
+fn syscall_result(result: usize) -> SysResult {
+    if is_error(result) {
+        Err(usize::MAX - result + 1)
+    } else {
+        Ok(result)
+    }
 }
 
 // Exit function
@@ -58,32 +58,20 @@ pub fn exit(status: usize) -> ! {
 // Write function
 pub fn write(fd: usize, buf: &[u8]) -> SysResult {
     let result = unsafe { syscall!(WRITE, fd, buf.as_ptr(), buf.len()) };
-    if is_error(result) {
-        Err(usize::MAX - result + 1) // Extract actual errno
-    } else {
-        Ok(result)
-    }
+    syscall_result(result)
 }
 
 // Writing the data from the raw pointer
 pub fn write_unchecked(fd: usize, ptr: *const u8, len: usize) -> SysResult {
     let result = unsafe { syscall!(WRITE, fd, ptr, len) };
-    if is_error(result) {
-        Err(usize::MAX - result + 1)
-    } else {
-        Ok(result)
-    }
+    syscall_result(result)
 }
 
 #[cfg(not(test))]
 // Read function
 pub fn read(fd: usize, buf: &mut [u8], count: usize) -> SysResult {
     let result = unsafe { syscall!(READ, fd, buf.as_ptr(), count) };
-    if is_error(result) {
-        Err(usize::MAX - result + 1) // Extract actual errno
-    } else {
-        Ok(result)
-    }
+    syscall_result(result)
 }
 
 // Need to match the signature
@@ -101,11 +89,7 @@ pub fn read(_fd: usize, buf: &mut [u8], _count: usize) -> SysResult {
 // ioctl function
 pub fn ioctl(fd: usize, request: usize, arg: usize) -> SysResult {
     let result = unsafe { syscall!(IOCTL, fd, request, arg) };
-    if is_error(result) {
-        Err(usize::MAX - result + 1) // Extract actual errno
-    } else {
-        Ok(result)
-    }
+    syscall_result(result)
 }
 
 #[cfg(not(test))]
@@ -143,21 +127,13 @@ pub fn putchar(c: u8) -> SysResult {
 // Open file function
 pub fn open(path: &[u8], flags: usize) -> SysResult {
     let result = unsafe { syscall!(OPEN, path.as_ptr(), flags, 0o666) };
-    if is_error(result) {
-        Err(usize::MAX - result + 1) // Extract actual errno
-    } else {
-        Ok(result)
-    }
+    syscall_result(result)
 }
 
 // Close file function
 pub fn close(fd: usize) -> SysResult {
     let result = unsafe { syscall!(CLOSE, fd) };
-    if is_error(result) {
-        Err(usize::MAX - result + 1) // Extract actual errno
-    } else {
-        Ok(result)
-    }
+    syscall_result(result)
 }
 
 // Memory map function
@@ -170,29 +146,17 @@ pub fn mmap(
     offset: usize,
 ) -> SysResult {
     let result = unsafe { syscall!(MMAP, addr, length, prot, flags, fd, offset) };
-    if is_error(result) {
-        Err(usize::MAX - result + 1) // Extract actual errno
-    } else {
-        Ok(result)
-    }
+    syscall_result(result)
 }
 
 // Memory unmap function
 pub fn munmap(addr: usize, length: usize) -> SysResult {
     let result = unsafe { syscall!(MUNMAP, addr, length) };
-    if is_error(result) {
-        Err(usize::MAX - result + 1) // Extract actual errno
-    } else {
-        Ok(result)
-    }
+    syscall_result(result)
 }
 
 // Seek function
 pub fn lseek(fd: usize, offset: usize, whence: usize) -> SysResult {
     let result = unsafe { syscall!(LSEEK, fd, offset, whence) };
-    if is_error(result) {
-        Err(usize::MAX - result + 1) // Extract actual errno
-    } else {
-        Ok(result)
-    }
+    syscall_result(result)
 }

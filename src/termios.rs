@@ -1,13 +1,11 @@
 #![allow(dead_code)]
 
-// Termios constants
 pub const TCGETS: usize = 0x5401;
 pub const TCSETS: usize = 0x5402;
 pub const TCSETSW: usize = 0x5403;
 pub const TCSETSF: usize = 0x5404;
 pub const TIOCGWINSZ: usize = 0x5413;
 
-// Termios flag constants
 pub const ECHO: u32 = 0o000_010;
 pub const ICANON: u32 = 0o000_002;
 pub const ISIG: u32 = 0o000_001;
@@ -20,11 +18,9 @@ pub const IXON: u32 = 0o002_000;
 pub const OPOST: u32 = 0o000_001;
 pub const CS8: u32 = 0o000_060;
 
-// Termios special character positions
 pub const VMIN: usize = 6;
 pub const VTIME: usize = 5;
 
-// Window size structure
 #[repr(C)]
 #[derive(Clone)]
 pub struct Winsize {
@@ -53,7 +49,6 @@ impl Winsize {
     }
 }
 
-// Termios structure
 #[repr(C)]
 #[derive(Clone)]
 pub struct Termios {
@@ -114,7 +109,6 @@ mod tests {
         assert_eq!(termios.lflag, 0);
         assert_eq!(termios.line, 0);
 
-        // Check that all control chars are 0
         for i in 0..32 {
             assert_eq!(termios.cc[i], 0);
         }
@@ -129,31 +123,21 @@ mod tests {
         winsize.rows = 25;
         winsize.cols = 80;
 
-        // Test immutable bytes
         {
             let bytes = winsize.as_bytes();
             assert_eq!(bytes.len(), 8);
 
-            // Verify bytes contain the expected values
-            // (This depends on the memory layout, which might be platform-specific)
-            // For a basic test, we can just ensure it's not all zeros
             let all_zeros = bytes.iter().all(|&b| b == 0);
             assert!(!all_zeros, "Bytes should not be all zeros");
         }
 
-        // Test mutable bytes separately
         {
             let bytes_mut = winsize.as_bytes_mut();
             assert_eq!(bytes_mut.len(), 8);
 
-            // Verify the mutable bytes can actually be modified
-            // and that it affects the original struct
             bytes_mut[0] = 42;
             bytes_mut[1] = 43;
 
-            // Check that modifying the bytes affected the struct
-            // The exact mapping depends on endianness, but we know
-            // the first two bytes should map to rows
             assert_ne!(winsize.rows, 25, "Modifying bytes should affect the struct");
         }
     }

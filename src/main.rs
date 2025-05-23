@@ -27,7 +27,6 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 #[cfg(all(not(test), not(debug_assertions)))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _start() -> ! {
-    // Need to align stack to make sse work
     unsafe { core::arch::asm!("and rsp, -64", options(nomem, nostack)) };
 
     match run() {
@@ -44,30 +43,44 @@ fn main() {
     }
 }
 
-fn run() -> Result<(), usize> {
+fn initialize_terminal() -> Result<(Winsize, Termios), usize> {
     let mut winsize = Winsize::new();
-
     get_winsize(syscall::STDOUT, &mut winsize)?;
 
-    // Get and save original terminal settings
     let mut orig_termios = Termios::new();
-
     get_termios(syscall::STDIN, &mut orig_termios)?;
-    let mut raw_termios = orig_termios.clone();
 
+    let mut raw_termios = orig_termios.clone();
     set_raw_mode(&mut raw_termios);
     set_termios(syscall::STDIN, TCSETS, &raw_termios)?;
 
-    match run_editor() {
-        Ok(()) => {}
-        Err(e) => {
-            puts("Error\r\n")?;
-            match e {
-                editor::EditorError::SysError(n) => write_number(n),
-                _ => todo!(),
-            }
-        }
-    }
-    set_termios(syscall::STDIN, TCSETSW, &orig_termios)?;
+    Ok((winsize, orig_termios))
+}
+
+fn restore_terminal(orig_termios: &Termios) -> Result<(), usize> {
+    set_termios(syscall::STDIN, TCSETSW, orig_termios)?;
     Ok(())
+}
+
+fn handle_editor_error(e: &editor::EditorError) -> Result<(), usize> {
+    puts("Error\r\n")?;
+    match e {
+        editor::EditorError::SysError(n) => {
+            write_number(*n);
+            Ok(())
+        }
+        _ => todo!(),
+    }
+}
+
+fn run() -> Result<(), usize> {
+    let (_, orig_termios) = initialize_terminal()?;
+
+    let result = run_editor();
+
+    if let Err(e) = result {
+        handle_editor_error(&e)?;
+    }
+
+    restore_terminal(&orig_termios)
 }

@@ -17,19 +17,14 @@ pub fn set_termios(fd: usize, option: usize, termios: &Termios) -> SysResult {
 }
 
 pub fn set_raw_mode(termios: &mut Termios) {
-    // Input flags
     termios.iflag &= !(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
 
-    // Output flags
     termios.oflag &= !OPOST;
 
-    // Control flags
     termios.cflag |= CS8;
 
-    // Local flags
     termios.lflag &= !(ECHO | ICANON | ISIG | IEXTEN);
 
-    // Control characters
     termios.cc[VMIN] = 1; // Return after 1 byte read
     termios.cc[VTIME] = 0; // No timeout
 }
@@ -49,7 +44,6 @@ pub fn write_number(mut n: usize) {
         n = quotient;
         i += 1;
     }
-    // Output digits in correct order
     while i > 0 {
         i -= 1;
         let _ = putchar(digits[i]);
@@ -57,58 +51,45 @@ pub fn write_number(mut n: usize) {
 }
 
 pub fn clear_screen() -> SysResult {
-    // ESC [ 2 J - Clear entire screen
-    // ESC [ H - Move cursor to home position (0,0)
     puts("\x1b[2J\x1b[H")
 }
 
 pub fn clear_line() -> SysResult {
-    // ESC [ K - Clear from cursor to end of line
     puts("\x1b[K")
 }
 
 pub fn enter_alternate_screen() -> SysResult {
-    // ESC [ ? 1049 h - Save cursor position and switch to alternate screen
     puts("\x1b[?1049h")
 }
 
 pub fn exit_alternate_screen() -> SysResult {
-    // ESC [ ? 1049 l - Restore cursor position and switch to normal screen
     puts("\x1b[?1049l")
 }
 
-// Move cursor to a specific position (0-based coordinates)
 pub fn move_cursor(row: usize, col: usize) -> SysResult {
     // Format: ESC [ row+1 ; col+1 H
     let mut buf = [0u8; 16];
     let mut pos = 0;
 
-    // Start sequence
     buf[pos] = b'\x1b';
     buf[pos + 1] = b'[';
     pos += 2;
 
-    // Row (+1 because ANSI is 1-based)
     let row_num = row + 1;
     pos += write_usize_to_buf(&mut buf[pos..], row_num);
 
-    // Separator
     buf[pos] = b';';
     pos += 1;
 
-    // Column (+1 because ANSI is 1-based)
     let col_num = col + 1;
     pos += write_usize_to_buf(&mut buf[pos..], col_num);
 
-    // End sequence
     buf[pos] = b'H';
     pos += 1;
 
-    // Write the sequence
     write_buf(&buf[0..pos])
 }
 
-// Helper to write a usize number to buffer, returns bytes written
 pub fn write_usize_to_buf(buf: &mut [u8], n: usize) -> usize {
     if n == 0 {
         buf[0] = b'0';
@@ -119,7 +100,6 @@ pub fn write_usize_to_buf(buf: &mut [u8], n: usize) -> usize {
     let mut digit_count = 0;
     let mut num = n;
 
-    // Collect digits in reverse order
     while num > 0 {
         let quotient = num / 10;
         let remainder = num - (quotient * 10);
@@ -129,7 +109,6 @@ pub fn write_usize_to_buf(buf: &mut [u8], n: usize) -> usize {
         digit_count += 1;
     }
 
-    // Write digits in straight order
     let mut pos = 0;
     while digit_count > 0 {
         digit_count -= 1;
@@ -143,7 +122,6 @@ pub fn write_usize_to_buf(buf: &mut [u8], n: usize) -> usize {
 pub fn set_bg_color(color: u8) -> SysResult {
     // Format: ESC [ 4 color m
     let mut buf = [b'\x1b', b'[', b'4', 0, b'm'];
-    // Convert color to ascii
     buf[3] = b'0' + color;
     write_buf(&buf)
 }
@@ -151,7 +129,6 @@ pub fn set_bg_color(color: u8) -> SysResult {
 pub fn set_fg_color(color: u8) -> SysResult {
     // Format: ESC [ 3 color m
     let mut buf = [b'\x1b', b'[', b'3', 0, b'm'];
-    // Convert color to ascii
     buf[3] = b'0' + color;
     write_buf(&buf)
 }
@@ -162,7 +139,6 @@ pub fn reset_colors() -> SysResult {
 }
 
 pub fn set_bold() -> SysResult {
-    // ESC [ 1 m - Bold text
     puts("\x1b[1m")
 }
 
@@ -179,7 +155,6 @@ pub mod tests {
     use super::*;
     use crate::syscall::MAX_PATH;
 
-    // Test buffer for capturing output in tests
     pub static mut TEST_BUFFER: [u8; MAX_PATH] = [0; MAX_PATH];
     pub static mut TEST_BUFFER_LEN: usize = 0;
     static mut TEST_MODE: bool = false;
@@ -384,7 +359,6 @@ pub mod tests {
 
     #[test]
     fn test_color_setting_functions() {
-        // Test set_bg_color
         enable_test_mode();
         let bg_result = set_bg_color(7);
 
@@ -394,7 +368,6 @@ pub mod tests {
             assert_eq!(&TEST_BUFFER[..TEST_BUFFER_LEN], b"\x1b[47m");
         }
 
-        // Test set_fg_color
         enable_test_mode();
         let fg_result = set_fg_color(2);
 
@@ -404,7 +377,6 @@ pub mod tests {
             assert_eq!(&TEST_BUFFER[..TEST_BUFFER_LEN], b"\x1b[32m");
         }
 
-        // Test reset_colors
         enable_test_mode();
         let reset_result = reset_colors();
 
@@ -414,7 +386,6 @@ pub mod tests {
             assert_eq!(&TEST_BUFFER[..TEST_BUFFER_LEN], b"\x1b[0m");
         }
 
-        // Test set_bold
         enable_test_mode();
         let bold_result = set_bold();
 

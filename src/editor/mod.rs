@@ -46,65 +46,35 @@ impl From<FileBufferError> for EditorError {
     }
 }
 
+fn map_existing_file(fd: usize, file_size: usize) -> Result<FileBuffer, EditorError> {
+    if file_size == 0 {
+        close(fd)?;
+        return create_empty_buffer(4096);
+    }
+
+    let prot = PROT_READ | PROT_WRITE;
+    let flags = MAP_PRIVATE;
+    let Ok(new_buffer) = mmap(0, file_size, prot, flags, fd, 0) else {
+        return Err(EditorError::MMapFile);
+    };
+
+    Ok(FileBuffer {
+        content: new_buffer as *mut u8,
+        size: file_size,
+        capacity: file_size,
+        modified: false,
+    })
+}
+
 fn open_file(file_path: &[u8]) -> Result<FileBuffer, EditorError> {
-    // Try opening the file
-    if let Ok(fd) = open(file_path, O_RDONLY) {
-        // File exists
-        if fd == 0 {
-            return Err(EditorError::LoadFile);
+    match open(file_path, O_RDONLY) {
+        Ok(0) => Err(EditorError::LoadFile),
+        Ok(fd) => {
+            let file_size = lseek(fd, 0, SEEK_END)?;
+            lseek(fd, 0, SEEK_SET)?;
+            map_existing_file(fd, file_size)
         }
-        let file_size = lseek(fd, 0, SEEK_END)?;
-        lseek(fd, 0, SEEK_SET)?;
-
-        let buffer = {
-            if file_size == 0 {
-                close(fd)?;
-                let new_capacity = 4096; // Start with one page
-                let prot = PROT_READ | PROT_WRITE;
-                let flags = MAP_PRIVATE | MAP_ANONYMOUS;
-                let Ok(new_buffer) = mmap(0, new_capacity, prot, flags, usize::MAX, 0) else {
-                    return Err(FileBufferError::WrongSize.into());
-                };
-
-                FileBuffer {
-                    content: new_buffer as *mut u8,
-                    size: 0,
-                    capacity: new_capacity,
-                    modified: true,
-                }
-            } else {
-                let new_capacity = file_size;
-                // Round up to the next page
-                let prot = PROT_READ | PROT_WRITE;
-                let flags = MAP_PRIVATE;
-                let Ok(new_buffer) = mmap(0, new_capacity, prot, flags, fd, 0) else {
-                    return Err(EditorError::MMapFile);
-                };
-
-                FileBuffer {
-                    content: new_buffer as *mut u8,
-                    size: file_size,
-                    capacity: new_capacity,
-                    modified: false,
-                }
-            }
-        };
-        Ok(buffer)
-    } else {
-        // File doesn't exist, create a new empty buffer
-        let new_capacity = 4096; // Start with one page
-        let prot = PROT_READ | PROT_WRITE;
-        let flags = MAP_PRIVATE | MAP_ANONYMOUS;
-        let Ok(new_buffer) = mmap(0, new_capacity, prot, flags, usize::MAX, 0) else {
-            return Err(FileBufferError::WrongSize.into());
-        };
-
-        Ok(FileBuffer {
-            content: new_buffer as *mut u8,
-            size: 0,
-            capacity: new_capacity,
-            modified: true,
-        })
+        Err(_) => create_empty_buffer(4096),
     }
 }
 
@@ -112,7 +82,7 @@ fn insert_newline(state: &mut EditorState, row: usize, col: usize) -> Result<(),
     if let Err(e) = state.buffer.insert_newline(row, col) {
         let result = state.print_error(match e {
             FileBufferError::BufferFull => "Buffer is full",
-            _ => "Failed to insert newline",
+            FileBufferError::InvalidOperation => "Failed to insert newline",
         });
 
         if result.is_err() {
@@ -123,7 +93,6 @@ fn insert_newline(state: &mut EditorState, row: usize, col: usize) -> Result<(),
     Ok(())
 }
 
-// Process cursor movement keys that don't modify buffer
 fn process_movement_key(key: Key, state: &mut EditorState) -> bool {
     match key {
         Key::ArrowUp => {
@@ -178,23 +147,18 @@ fn process_movement_key(key: Key, state: &mut EditorState) -> bool {
     }
 }
 
-// Handle OpenLine key - insert newline with appropriate cursor positioning
 fn process_open_line(state: &mut EditorState) -> SysResult {
     if state.file_col == 0 {
-        // If at beginning of line, insert a newline above
         match insert_newline(state, state.file_row, 0) {
             Ok(()) => Ok(0),
             Err(result) => result,
         }
-        // Cursor stays at the same position
     } else {
-        // Otherwise, insert a newline at the current cursor position
         let result = match insert_newline(state, state.file_row, state.file_col) {
             Ok(()) => Ok(0),
             Err(result) => result,
         };
         if result.is_ok() {
-            // Move cursor to the beginning of the next line
             state.file_row += 1;
             state.file_col = 0;
         }
@@ -202,7 +166,6 @@ fn process_open_line(state: &mut EditorState) -> SysResult {
     }
 }
 
-// Handle Enter key - insert newline and move cursor to next line
 fn process_enter(state: &mut EditorState) -> SysResult {
     let result = match insert_newline(state, state.file_row, state.file_col) {
         Ok(()) => Ok(0),
@@ -215,7 +178,6 @@ fn process_enter(state: &mut EditorState) -> SysResult {
     result
 }
 
-// Handle Backspace key - delete character before cursor
 fn process_backspace(state: &mut EditorState) -> SysResult {
     if state.file_col == 0 && state.file_row == 0 {
         return Ok(0);
@@ -237,7 +199,6 @@ fn process_backspace(state: &mut EditorState) -> SysResult {
         return Ok(0);
     }
 
-    // Update cursor position after backspace
     if state.file_col > 0 {
         state.file_col -= 1;
     } else if state.file_row > 0 {
@@ -248,13 +209,11 @@ fn process_backspace(state: &mut EditorState) -> SysResult {
     Ok(0)
 }
 
-// Handle Delete key - delete character at cursor
 fn process_delete(state: &mut EditorState) -> SysResult {
     let line_count = state.buffer.count_lines();
     let current_line_len = state.buffer.line_length(state.file_row, state.tab_size);
 
     if state.file_col < current_line_len {
-        // Delete character at cursor position
         let result = state.buffer.delete_char(state.file_row, state.file_col);
         if let Err(e) = result {
             state.print_error(if matches!(e, FileBufferError::InvalidOperation) {
@@ -264,7 +223,6 @@ fn process_delete(state: &mut EditorState) -> SysResult {
             })?;
         }
     } else if state.file_row + 1 < line_count {
-        // At end of line - join with next line by deleting the newline
         if let Some(line_end) = state.buffer.find_line_end(state.file_row) {
             let result = state.buffer.delete_at_position(line_end);
             if let Err(e) = result {
@@ -280,7 +238,6 @@ fn process_delete(state: &mut EditorState) -> SysResult {
     Ok(0)
 }
 
-// Handle character insertion
 fn process_char(state: &mut EditorState, ch: u8) -> SysResult {
     let result = state.buffer.insert_char(state.file_row, state.file_col, ch);
     if let Err(e) = result {
@@ -292,7 +249,6 @@ fn process_char(state: &mut EditorState, ch: u8) -> SysResult {
         return Ok(0);
     }
 
-    // Move cursor right after insertion
     state.file_col += 1;
     Ok(0)
 }
@@ -302,14 +258,11 @@ fn process_cursor_key(key: Key, state: &mut EditorState) -> SysResult {
         return Ok(0);
     }
 
-    // Process movement keys - these don't modify buffer
     if process_movement_key(key, state) {
         state.scroll_to_cursor();
-        // Always redraw when mark is active to update selection highlight
         return state.draw_screen();
     }
 
-    // Process editing keys that modify buffer
     let edit_result = match key {
         Key::OpenLine => process_open_line(state),
         Key::Enter => process_enter(state),
@@ -326,16 +279,10 @@ fn process_cursor_key(key: Key, state: &mut EditorState) -> SysResult {
 }
 
 #[cfg(not(tarpaulin_include))]
-fn handle_open_file(state: &mut EditorState) -> Result<(), EditorError> {
-    use crate::terminal::{clear_screen, restore_cursor};
-
-    save_cursor()?;
-    let prompt: &str = "Enter filename: ";
-    state.print_message(prompt)?;
-    move_cursor(state.winsize.rows as usize - 1, prompt.len())?;
-
+fn read_filename_input(prompt: &str, state: &EditorState) -> Result<[u8; MAX_PATH], EditorError> {
     let mut filename = [0u8; MAX_PATH];
     let mut len: usize = 0;
+
     loop {
         if let Some(key) = read_key() {
             match key {
@@ -343,7 +290,7 @@ fn handle_open_file(state: &mut EditorState) -> Result<(), EditorError> {
                     filename[len] = 0;
                     break;
                 }
-                Key::Char(ch) if len < 62 && ch.is_ascii_graphic() || ch == b' ' => {
+                Key::Char(ch) if len < 62 && (ch.is_ascii_graphic() || ch == b' ') => {
                     filename[len] = ch;
                     len += 1;
                     putchar(ch)?;
@@ -358,6 +305,25 @@ fn handle_open_file(state: &mut EditorState) -> Result<(), EditorError> {
             }
         }
     }
+
+    Ok(filename)
+}
+
+#[cfg(not(tarpaulin_include))]
+fn setup_file_open_prompt(state: &mut EditorState, prompt: &str) -> Result<(), EditorError> {
+    save_cursor()?;
+    state.print_message(prompt)?;
+    move_cursor(state.winsize.rows as usize - 1, prompt.len())?;
+    Ok(())
+}
+
+#[cfg(not(tarpaulin_include))]
+fn finalize_file_open(
+    state: &mut EditorState,
+    filename: [u8; MAX_PATH],
+) -> Result<(), EditorError> {
+    use crate::terminal::{clear_screen, restore_cursor};
+
     move_cursor(state.winsize.rows as usize - 1, 0)?;
     clear_line()?;
     restore_cursor()?;
@@ -371,13 +337,15 @@ fn handle_open_file(state: &mut EditorState) -> Result<(), EditorError> {
             state.buffer = new_buffer;
             clear_screen()?;
             state.draw_screen()?;
+            state.filename.fill(0);
             state.filename[..filename.len()].copy_from_slice(&filename);
-            if state.buffer.is_modified() {
-                state.print_message("New file created")?;
-            } else {
-                state.print_message("File opened successfully")?;
-            }
 
+            let message = if state.buffer.is_modified() {
+                "New file created"
+            } else {
+                "File opened successfully"
+            };
+            state.print_message(message)?;
             move_cursor(0, 0)?;
             Ok(())
         }
@@ -388,7 +356,14 @@ fn handle_open_file(state: &mut EditorState) -> Result<(), EditorError> {
     }
 }
 
-// Handle saving the file
+#[cfg(not(tarpaulin_include))]
+fn handle_open_file(state: &mut EditorState) -> Result<(), EditorError> {
+    let prompt = "Enter filename: ";
+    setup_file_open_prompt(state, prompt)?;
+    let filename = read_filename_input(prompt, state)?;
+    finalize_file_open(state, filename)
+}
+
 fn handle_save_file(state: &mut EditorState) -> SysResult {
     match state.buffer.save_to_file(&state.filename) {
         Ok(_) => Ok(state.print_message("File saved successfully")?),
@@ -399,7 +374,6 @@ fn handle_save_file(state: &mut EditorState) -> SysResult {
     }
 }
 
-// Implement Drop for FileBuffer
 impl Drop for FileBuffer {
     fn drop(&mut self) {
         self.cleanup();
@@ -410,7 +384,6 @@ fn check_terminal_resize(state: &mut EditorState) -> SysResult {
     let mut new_winsize = Winsize::new();
     get_winsize(STDOUT, &mut new_winsize)?;
 
-    // Check if terminal size has changed
     if new_winsize.rows != state.winsize.rows || new_winsize.cols != state.winsize.cols {
         // Update the editor state with new dimensions
         state.update_winsize(new_winsize);

@@ -36,7 +36,7 @@ impl EditorState {
     // Create a new editor state
     pub(in crate::editor) fn new(winsize: Winsize, filename: &[u8; MAX_PATH]) -> Self {
         let mut own_filename = [0u8; MAX_PATH];
-        own_filename[..filename.len()].copy_from_slice(filename);
+        own_filename.copy_from_slice(filename);
 
         // Create and initialize the syntax highlighter
         let mut highlighter = SyntaxHighlighter::new();
@@ -89,6 +89,37 @@ impl EditorState {
     }
 
     // Start search mode
+    fn display_search_direction(&self) -> SysResult {
+        if self.search.reverse {
+            puts("Reverse search")
+        } else {
+            puts("Search")
+        }
+    }
+
+    fn display_case_sensitivity(&self) -> SysResult {
+        if self.search.case_sensitive {
+            puts(" (case-sensitive): ")
+        } else {
+            puts(" (case-insensitive): ")
+        }
+    }
+
+    fn display_search_query(&self) -> SysResult {
+        write_unchecked(STDOUT, self.search.query.as_ptr(), self.search.query_len)
+    }
+
+    fn display_complete_search_prompt(&self) -> SysResult {
+        let mut result = self.display_search_direction();
+        if result.is_ok() {
+            result = self.display_case_sensitivity();
+        }
+        if result.is_ok() {
+            result = self.display_search_query();
+        }
+        result
+    }
+
     pub(in crate::editor) fn start_search(&mut self, reverse: bool) -> SysResult {
         // Save current position to return to if search is cancelled
         self.search.orig_row = self.file_row;
@@ -108,22 +139,7 @@ impl EditorState {
             i += 1;
         }
 
-        // Show search prompt with appropriate direction indicator and case sensitivity
-        let case_text = if self.search.case_sensitive {
-            " (case-sensitive): "
-        } else {
-            " (case-insensitive): "
-        };
-
-        let search_type = if reverse { "Reverse search" } else { "Search" };
-
-        self.print_status(|| {
-            let mut inner_result = puts(search_type);
-            if inner_result.is_ok() {
-                inner_result = puts(case_text);
-            }
-            inner_result
-        })
+        self.print_status(|| self.display_complete_search_prompt())
     }
 
     // Cancel search mode and return to original position
@@ -149,102 +165,87 @@ impl EditorState {
         self.print_message("")
     }
 
-    // Update search when query changes
+    fn chars_match_case_sensitive(line_ch: u8, query_ch: u8, case_sensitive: bool) -> bool {
+        if case_sensitive {
+            line_ch == query_ch
+        } else {
+            let line_ch_lower = if line_ch.is_ascii_uppercase() {
+                line_ch + 32
+            } else {
+                line_ch
+            };
+
+            let query_ch_lower = if query_ch.is_ascii_uppercase() {
+                query_ch + 32
+            } else {
+                query_ch
+            };
+
+            line_ch_lower == query_ch_lower
+        }
+    }
+
+    fn validate_current_match(&mut self) -> bool {
+        match self.buffer.get_line(self.file_row) {
+            Some(line) if self.file_col + self.search.query_len <= line.len() => {
+                let query = &self.search.query[..self.search.query_len];
+
+                for j in 0..self.search.query_len {
+                    let line_ch = line[self.file_col + j];
+                    let query_ch = query[j];
+
+                    if !Self::chars_match_case_sensitive(
+                        line_ch,
+                        query_ch,
+                        self.search.case_sensitive,
+                    ) {
+                        return false;
+                    }
+                }
+
+                self.search.match_row = self.file_row;
+                self.search.match_col = self.file_col;
+                self.search.match_len = self.search.query_len;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn execute_search(&mut self) -> SysResult {
+        let search_result = if self.search.reverse {
+            self.search
+                .find_substring_backward(&self.buffer, self.file_row, self.file_col)
+        } else {
+            self.search
+                .find_substring_forward(&self.buffer, self.file_row, self.file_col)
+        };
+
+        match search_result {
+            Some((row, col, len)) => {
+                self.search.match_row = row;
+                self.search.match_col = col;
+                self.search.match_len = len;
+                self.file_row = row;
+                self.file_col = col;
+                self.scroll_to_cursor();
+                self.draw_screen()
+            }
+            None => self.print_warning("No match found"),
+        }
+    }
+
     pub(in crate::editor) fn update_search(&mut self) -> SysResult {
-        // Only continue if the search query is not empty
         if self.search.query_len == 0 {
             return Ok(0);
         }
-        // First check if current position still matches the updated query
-        let match_found = if self.search.match_len > 0 {
-            // Try to validate the current match with updated query
-            match self.buffer.get_line(self.file_row) {
-                Some(line) if self.file_col + self.search.query_len <= line.len() => {
-                    let query = &self.search.query[..self.search.query_len];
-                    let mut current_match_valid = true;
 
-                    // Compare each character with the updated query
-                    for j in 0..self.search.query_len {
-                        let line_ch = line[self.file_col + j];
-                        let query_ch = query[j];
+        let match_found = self.search.match_len > 0 && self.validate_current_match();
 
-                        // Compare based on case sensitivity setting
-                        let chars_match = if self.search.case_sensitive {
-                            line_ch == query_ch
-                        } else {
-                            // Convert both characters to lowercase
-                            let line_ch_lower = if line_ch.is_ascii_uppercase() {
-                                line_ch + 32
-                            } else {
-                                line_ch
-                            };
-
-                            let query_ch_lower = if query_ch.is_ascii_uppercase() {
-                                query_ch + 32
-                            } else {
-                                query_ch
-                            };
-
-                            line_ch_lower == query_ch_lower
-                        };
-
-                        if !chars_match {
-                            current_match_valid = false;
-                            break;
-                        }
-                    }
-
-                    // If current match is still valid, update match info
-                    if current_match_valid {
-                        self.search.match_row = self.file_row;
-                        self.search.match_col = self.file_col;
-                        self.search.match_len = self.search.query_len;
-                        self.draw_screen()?;
-                        true // Match found
-                    } else {
-                        false
-                    }
-                }
-                _ => false, // No valid line or line too short
-            }
-        } else {
-            false
-        };
-
-        // If current position doesn't match, find a new match
         if match_found {
-            Ok(0)
+            self.draw_screen()
         } else {
-            // Execute search in the appropriate direction
-            let search_result = if self.search.reverse {
-                self.search
-                    .find_substring_backward(&self.buffer, self.file_row, self.file_col)
-            } else {
-                self.search
-                    .find_substring_forward(&self.buffer, self.file_row, self.file_col)
-            };
-
-            // Process search results
-            match search_result {
-                Some((row, col, len)) => {
-                    // Store match info
-                    self.search.match_row = row;
-                    self.search.match_col = col;
-                    self.search.match_len = len;
-
-                    // Move cursor to match position
-                    self.file_row = row;
-                    self.file_col = col;
-                    self.scroll_to_cursor();
-
-                    // Redraw the screen to show the match
-                    self.draw_screen()
-                }
-                None => {
-                    // No match found
-                    self.print_warning("No match found")
-                }
-            }
+            self.execute_search()
         }
     }
 
@@ -257,37 +258,7 @@ impl EditorState {
             self.search.query_len += 1;
 
             // Update search prompt
-            let result = self.print_status(|| {
-                let mut inner_result;
-
-                // Display appropriate search prompt based on direction
-                inner_result = if self.search.reverse {
-                    puts("Reverse search")
-                } else {
-                    puts("Search")
-                };
-
-                // Show case sensitivity status if prompt was displayed successfully
-                if inner_result.is_ok() {
-                    inner_result = if self.search.case_sensitive {
-                        puts(" (case-sensitive): ")
-                    } else {
-                        puts(" (case-insensitive): ")
-                    };
-                }
-
-                // Display the query text if previous steps succeeded
-                if inner_result.is_ok() {
-                    inner_result =
-                        write_unchecked(STDOUT, self.search.query.as_ptr(), self.search.query_len);
-                }
-
-                // Return status
-                match inner_result {
-                    Ok(_) => Ok(0),
-                    err => err,
-                }
-            });
+            let result = self.print_status(|| self.display_complete_search_prompt());
 
             // If status update was successful, search for matches
             match result {
@@ -311,35 +282,7 @@ impl EditorState {
         self.search.switch_direction();
 
         // Update the search prompt based on the new direction
-        let result = self.print_status(|| {
-            // Display appropriate search prompt based on new direction
-            let mut inner_result = if self.search.reverse {
-                puts("Reverse search")
-            } else {
-                puts("Search")
-            };
-
-            // Show case sensitivity status if prompt was displayed successfully
-            if inner_result.is_ok() {
-                inner_result = if self.search.case_sensitive {
-                    puts(" (case-sensitive): ")
-                } else {
-                    puts(" (case-insensitive): ")
-                };
-            }
-
-            // Display the query text if previous steps succeeded
-            if inner_result.is_ok() {
-                inner_result =
-                    write_unchecked(STDOUT, self.search.query.as_ptr(), self.search.query_len);
-            }
-
-            // Return status
-            match inner_result {
-                Ok(_) => Ok(0),
-                err => err,
-            }
-        });
+        let result = self.print_status(|| self.display_complete_search_prompt());
 
         // Draw screen if status update was successful
         match result {
@@ -359,35 +302,7 @@ impl EditorState {
         self.search.toggle_case_sensitivity();
 
         // Update the status line to show the case sensitivity state
-        let result = self.print_status(|| {
-            // Display appropriate search prompt based on direction
-            let mut inner_result = if self.search.reverse {
-                puts("Reverse search")
-            } else {
-                puts("Search")
-            };
-
-            // Show case sensitivity status if prompt was displayed successfully
-            if inner_result.is_ok() {
-                inner_result = if self.search.case_sensitive {
-                    puts(" (case-sensitive): ")
-                } else {
-                    puts(" (case-insensitive): ")
-                };
-            }
-
-            // Display the query text if previous steps succeeded
-            if inner_result.is_ok() {
-                inner_result =
-                    write_unchecked(STDOUT, self.search.query.as_ptr(), self.search.query_len);
-            }
-
-            // Return status
-            match inner_result {
-                Ok(_) => Ok(0),
-                err => err,
-            }
-        });
+        let result = self.print_status(|| self.display_complete_search_prompt());
 
         // Only continue if status update was successful and there's a query to search for
         match (result, self.search.query_len > 0) {
@@ -436,35 +351,7 @@ impl EditorState {
             self.search.query_len -= 1;
 
             // Update search prompt
-            let result = self.print_status(|| {
-                // Display appropriate search prompt based on direction
-                let mut inner_result = if self.search.reverse {
-                    puts("Reverse search")
-                } else {
-                    puts("Search")
-                };
-
-                // Show case sensitivity status if prompt was displayed successfully
-                if inner_result.is_ok() {
-                    inner_result = if self.search.case_sensitive {
-                        puts(" (case-sensitive): ")
-                    } else {
-                        puts(" (case-insensitive): ")
-                    };
-                }
-
-                // Display the query text if previous steps succeeded
-                if inner_result.is_ok() {
-                    inner_result =
-                        write_unchecked(STDOUT, self.search.query.as_ptr(), self.search.query_len);
-                }
-
-                // Return status
-                match inner_result {
-                    Ok(_) => Ok(0),
-                    err => err,
-                }
-            });
+            let result = self.print_status(|| self.display_complete_search_prompt());
 
             // Process the updated query if status update was successful
             match result {
@@ -709,123 +596,94 @@ impl EditorState {
         col
     }
 
-    // direction: true for forward, false for backward
+    fn find_word_forward(&self, line_count: usize) -> (usize, usize) {
+        match self.buffer.get_line(self.file_row) {
+            None if self.file_row + 1 < line_count => (self.file_row + 1, 0),
+            None => (self.file_row, self.file_col),
+            Some(line) if line.is_empty() || self.file_col >= line.len() => {
+                if self.file_row + 1 < line_count {
+                    (self.file_row + 1, 0)
+                } else {
+                    (self.file_row, self.file_col)
+                }
+            }
+            Some(line) => {
+                let new_col = EditorState::skip_current_word(line, self.file_col);
+                if new_col >= line.len() && self.file_row + 1 < line_count {
+                    (self.file_row + 1, 0)
+                } else {
+                    (self.file_row, new_col)
+                }
+            }
+        }
+    }
+
+    fn find_prev_nonempty_line(&self) -> Option<(usize, usize)> {
+        if self.file_row == 0 {
+            return None;
+        }
+
+        let mut new_row = self.file_row - 1;
+        loop {
+            if let Some(line) = self.buffer.get_line(new_row) {
+                if !line.is_empty() {
+                    let col = line.len().saturating_sub(1);
+                    let col = EditorState::find_word_start(line, col);
+                    return Some((new_row, col));
+                }
+            }
+
+            if new_row == 0 {
+                break;
+            }
+            new_row -= 1;
+        }
+        None
+    }
+
+    fn find_word_backward(&self) -> (usize, usize) {
+        match self.buffer.get_line(self.file_row) {
+            None => (self.file_row, self.file_col),
+            Some(line) if line.is_empty() || self.file_col == 0 => self
+                .find_prev_nonempty_line()
+                .unwrap_or((self.file_row, self.file_col)),
+            Some(line) => {
+                let adj_col = if self.file_col >= line.len() {
+                    line.len().saturating_sub(1)
+                } else {
+                    self.file_col
+                };
+
+                let col = if adj_col < line.len()
+                    && Self::is_alnum(line[adj_col])
+                    && (adj_col == 0 || !Self::is_alnum(line[adj_col - 1]))
+                {
+                    if adj_col > 0 {
+                        EditorState::find_word_start(line, adj_col - 1)
+                    } else {
+                        adj_col
+                    }
+                } else {
+                    EditorState::find_word_start(line, adj_col)
+                };
+
+                (self.file_row, col)
+            }
+        }
+    }
+
     pub(in crate::editor) fn find_word_boundary(&mut self, direction: bool) {
         let line_count = self.buffer.count_lines();
-        // Early return if buffer is empty or cursor is past end of file
         if line_count == 0 || self.file_row >= line_count {
             return;
         }
 
         let (new_row, new_col) = if direction {
-            // Forward movement
-            let line_opt = self.buffer.get_line(self.file_row);
-
-            match line_opt {
-                // Empty line or no line available
-                None => {
-                    if self.file_row + 1 < line_count {
-                        (self.file_row + 1, 0)
-                    } else {
-                        (self.file_row, self.file_col)
-                    }
-                }
-                // Line with content
-                Some(line) => {
-                    if line.is_empty() || self.file_col >= line.len() {
-                        // Empty line or cursor at end of line
-                        if self.file_row + 1 < line_count {
-                            (self.file_row + 1, 0)
-                        } else {
-                            (self.file_row, self.file_col)
-                        }
-                    } else {
-                        // Non-empty line with content after cursor
-                        // Skip to next word boundary
-                        let new_col = EditorState::skip_current_word(line, self.file_col);
-
-                        // If we ended up at end of line, move to next line if possible
-                        if new_col >= line.len() && self.file_row + 1 < line_count {
-                            (self.file_row + 1, 0)
-                        } else {
-                            (self.file_row, new_col)
-                        }
-                    }
-                }
-            }
+            self.find_word_forward(line_count)
         } else {
-            // Backward movement
-            let line_opt = self.buffer.get_line(self.file_row);
-
-            match line_opt {
-                // No line available
-                None => (self.file_row, self.file_col),
-
-                // Line available
-                Some(line) => {
-                    if line.is_empty() || self.file_col == 0 {
-                        // Empty line or at beginning of line
-                        // At line start or empty line - go to previous non-empty line if possible
-                        if self.file_row > 0 {
-                            let mut new_row = self.file_row - 1;
-                            let mut found = false;
-                            let mut col = 0;
-
-                            // Find previous non-empty line
-                            loop {
-                                if let Some(line) = self.buffer.get_line(new_row) {
-                                    if !line.is_empty() {
-                                        col = line.len().saturating_sub(1);
-                                        col = EditorState::find_word_start(line, col);
-                                        found = true;
-                                        break;
-                                    }
-                                }
-
-                                if new_row == 0 {
-                                    break;
-                                }
-                                new_row -= 1;
-                            }
-
-                            if found {
-                                (new_row, col)
-                            } else {
-                                (self.file_row, self.file_col)
-                            }
-                        } else {
-                            (self.file_row, self.file_col)
-                        }
-                    } else {
-                        // Within a line
-                        // Handle cursor after end of line
-                        let adj_col = if self.file_col >= line.len() {
-                            line.len().saturating_sub(1)
-                        } else {
-                            self.file_col
-                        };
-
-                        // Check if at word start and if so, move back
-                        let col = if adj_col < line.len()
-                            && Self::is_alnum(line[adj_col])
-                            && (adj_col == 0 || !Self::is_alnum(line[adj_col - 1]))
-                        {
-                            if adj_col > 0 {
-                                EditorState::find_word_start(line, adj_col - 1)
-                            } else {
-                                adj_col
-                            }
-                        } else {
-                            EditorState::find_word_start(line, adj_col)
-                        };
-
-                        (self.file_row, col)
-                    }
-                }
-            }
+            self.find_word_backward()
         };
 
-        // Update cursor position and preferred column
         self.file_row = new_row;
         self.file_col = new_col;
         self.preferred_col = new_col;
@@ -1000,12 +858,6 @@ impl EditorState {
 
         Ok(0)
     }
-
-    // Draw line method removed as refactored into draw_line_at_index
-
-    // Historical methods removed
-
-    // Historical methods removed
 
     pub(in crate::editor) fn draw_screen(&mut self) -> SysResult {
         // Calculate available height for content

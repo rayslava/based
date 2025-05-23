@@ -2,7 +2,6 @@ use crate::syscall::{SysResult, write_unchecked};
 
 #[derive(Debug)]
 pub(in crate::editor) enum FileBufferError {
-    WrongSize,
     BufferFull,
     InvalidOperation,
 }
@@ -46,15 +45,13 @@ impl FileBuffer {
         Ok(())
     }
 
-    // Resize the buffer to accommodate more content
-    fn resize_buffer(&mut self) -> Result<(), FileBufferError> {
+    fn calculate_new_capacity(&self) -> usize {
         const PAGE_SIZE: usize = 4096;
         const PAGE_MASK: usize = PAGE_SIZE - 1;
 
-        let new_capacity = if self.capacity == 0 {
-            PAGE_SIZE // Start with one page if buffer is empty
+        if self.capacity == 0 {
+            PAGE_SIZE
         } else {
-            // Round up to next page boundary and add an extra page if exactly at boundary
             let aligned = (self.capacity + PAGE_MASK) & !PAGE_MASK;
             aligned
                 + if self.capacity & PAGE_MASK == 0 {
@@ -62,30 +59,41 @@ impl FileBuffer {
                 } else {
                     0
                 }
-        };
+        }
+    }
 
-        // Allocate new buffer
+    fn allocate_new_buffer(new_capacity: usize) -> Result<*mut u8, FileBufferError> {
         let prot = crate::syscall::PROT_READ | crate::syscall::PROT_WRITE;
         let flags = crate::syscall::MAP_PRIVATE | crate::syscall::MAP_ANONYMOUS;
-        let Ok(new_buffer) = crate::syscall::mmap(0, new_capacity, prot, flags, usize::MAX, 0)
-        else {
-            return Err(FileBufferError::BufferFull);
-        };
+        crate::syscall::mmap(0, new_capacity, prot, flags, usize::MAX, 0)
+            .map(|addr| addr as *mut u8)
+            .map_err(|_| FileBufferError::BufferFull)
+    }
 
-        // Copy existing content to new buffer
+    fn copy_content_to_new_buffer(&self, new_buffer: *mut u8) {
         unsafe {
             if !self.content.is_null() && self.size > 0 {
                 for i in 0..self.size {
-                    *((new_buffer as *mut u8).add(i)) = *self.content.add(i);
+                    *new_buffer.add(i) = *self.content.add(i);
                 }
-
-                // Free the old buffer
-                let _ = crate::syscall::munmap(self.content as usize, self.capacity);
             }
         }
+    }
 
-        // Update buffer pointers and capacity
-        self.content = new_buffer as *mut u8;
+    fn free_old_buffer(&self) {
+        if !self.content.is_null() && self.capacity > 0 {
+            let _ = crate::syscall::munmap(self.content as usize, self.capacity);
+        }
+    }
+
+    fn resize_buffer(&mut self) -> Result<(), FileBufferError> {
+        let new_capacity = self.calculate_new_capacity();
+        let new_buffer = Self::allocate_new_buffer(new_capacity)?;
+
+        self.copy_content_to_new_buffer(new_buffer);
+        self.free_old_buffer();
+
+        self.content = new_buffer;
         self.capacity = new_capacity;
 
         Ok(())
@@ -205,14 +213,7 @@ impl FileBuffer {
         self.modified
     }
 
-    // Save file to disk
-    pub(in crate::editor) fn save_to_file(&mut self, path: &[u8]) -> SysResult {
-        use crate::syscall::{O_CREAT, O_TRUNC, O_WRONLY, close, open};
-
-        // Open or create the file for writing
-        let fd = open(path, O_WRONLY | O_CREAT | O_TRUNC)?;
-
-        // Write the content, handling partial writes
+    fn write_all_content(&self, fd: usize) -> SysResult {
         let mut bytes_written = 0;
         while bytes_written < self.size {
             let remaining = self.size - bytes_written;
@@ -221,27 +222,26 @@ impl FileBuffer {
 
             bytes_written += result;
 
-            // If no bytes were written in this iteration, break to avoid an infinite loop
             if result == 0 {
                 break;
             }
         }
-
-        // Close the file
-        close(fd)?;
-
-        // Update modified status
-        self.modified = false;
-
         Ok(bytes_written)
     }
 
-    // Clean up resources when dropping FileBuffer
+    pub(in crate::editor) fn save_to_file(&mut self, path: &[u8]) -> SysResult {
+        use crate::syscall::{O_CREAT, O_TRUNC, O_WRONLY, close, open};
+
+        let fd = open(path, O_WRONLY | O_CREAT | O_TRUNC)?;
+        let bytes_written = self.write_all_content(fd)?;
+        close(fd)?;
+
+        self.modified = false;
+        Ok(bytes_written)
+    }
+
     pub(in crate::editor) fn cleanup(&self) {
-        if !self.content.is_null() && self.capacity > 0 {
-            // We don't handle errors during cleanup as we can't do much about them
-            let _ = crate::syscall::munmap(self.content as usize, self.capacity);
-        }
+        self.free_old_buffer();
     }
 
     // Count the number of lines in the file
